@@ -28,8 +28,8 @@ grade_episode = None
 # ---------------------------------------------------------------------------
 # CRITICAL: Use validator-injected environment variables (no hardcoded provider fallback).
 API_BASE_URL: Optional[str] = os.environ.get("API_BASE_URL")
-MODEL_NAME: str = os.getenv("MODEL_NAME", "meta-llama/Llama-3.2-3B-Instruct")
-API_KEY: Optional[str] = os.environ.get("API_KEY")  # NO default — validator-injected only
+MODEL_NAME: str = os.getenv("MODEL_NAME") or "meta-llama/Llama-3.1-8B-Instruct"
+API_KEY: Optional[str] =os.getenv("API_KEY") or os.getenv("HF_TOKEN")   # NO default — validator-injected only
 ENV_BASE_URL: str = os.getenv("ENV_BASE_URL", "https://samarthdave0305-cascade-failure-env.hf.space")
 LOCAL_IMAGE_NAME: str = os.environ.get("LOCAL_IMAGE_NAME", "cascade-guard:latest")
 DEBUG_LOGS: bool = os.getenv("DEBUG_LOGS", "0") == "1"
@@ -59,7 +59,7 @@ TASK_CONFIGS_BUDGET: Dict[str, float] = {
 # Token budget: output only needs ~60 tokens for the JSON action.
 # Keeping max_tokens LOW is critical - Groq limits total context (input+output).
 TEMPERATURE: float = 0.0
-MAX_TOKENS: int = 80   # action JSON ~ 50-60 chars / ~15 tokens; 80 is ample
+MAX_TOKENS: int = 60   # action JSON ~ 50-60 chars / ~15 tokens; 80 is ample
 EVAL_MODE: str = os.environ.get("EVAL_MODE", "baseline")  # baseline | multiseed
 EVAL_SPLIT: str = os.environ.get("EVAL_SPLIT", "holdout")
 SCORE_EPS: float = 0.01  # Strict epsilon: score range is [0.01, 0.99]
