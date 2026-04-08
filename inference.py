@@ -28,7 +28,7 @@ grade_episode = None
 # ---------------------------------------------------------------------------
 # CRITICAL: Use validator-injected environment variables (no hardcoded provider fallback).
 API_BASE_URL: Optional[str] = os.environ.get("API_BASE_URL")
-MODEL_NAME: str = os.getenv("MODEL_NAME") or "meta-llama/Llama-3.1-8B-Instruct"
+MODEL_NAME: str = os.getenv("MODEL_NAME", "meta-llama/Llama-3.2-3B-Instruct")
 API_KEY: Optional[str] =os.getenv("API_KEY") or os.getenv("HF_TOKEN")   # NO default — validator-injected only
 ENV_BASE_URL: str = os.getenv("ENV_BASE_URL", "https://samarthdave0305-cascade-failure-env.hf.space")
 LOCAL_IMAGE_NAME: str = os.environ.get("LOCAL_IMAGE_NAME", "cascade-guard:latest")
@@ -1338,7 +1338,7 @@ async def run_task(
     scenario_split: str = "train",
     scenario_index: int = 0,
 ) -> tuple[float, List[float]]:
-    print(f"[START] task={task_id} env=cascade_guard model={MODEL_NAME}")
+    print(f"[START] task={task_id} env=cascade_guard model={MODEL_NAME}", flush=True)
 
     planner_env: Optional[Any] = None
     rewards: List[float] = []
