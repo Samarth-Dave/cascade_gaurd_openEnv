@@ -2,13 +2,13 @@
 graders.py — CascadeGuard episode scoring
 ==========================================
 INVARIANT enforced at every exit point:
-    Every public function returns a float strictly in (SCORE_EPS, 1.0 - SCORE_EPS).
+    Every public function returns a float strictly in (0.01, 0.99).
     No function may return exactly 0.0 or 1.0 under any input — including NaN,
     ±inf, empty lists, all-zero lists, division by zero, or any exception path.
 
 Design contract
 ---------------
-* _clamp(v)          — first line of defence; maps any float → [SCORE_EPS, 1-SCORE_EPS]
+* _clamp(v)          — first line of defence; maps any float → [0.01, 0.99]
 * _safe(v)           — final gate; round-FIRST then boundary-check (never round-after-check)
 * Every sub-scorer   — returns via _clamp so its output is already safe
 * grade()            — wraps the dispatch in a broad try/except; applies _safe() twice
@@ -24,8 +24,8 @@ from typing import Dict, List, Set
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-SCORE_EPS: float = 1e-4          # smallest legal score  (exclusive lower bound is 0)
-_SCORE_HI: float = 1.0 - SCORE_EPS   # largest  legal score  (exclusive upper bound is 1)
+SCORE_EPS: float = 0.01          # smallest legal score  (exclusive lower bound is 0)
+_SCORE_HI: float = 0.99          # largest  legal score  (exclusive upper bound is 1)
 
 
 # ---------------------------------------------------------------------------

@@ -29,13 +29,11 @@ except Exception:
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-API_BASE_URL: str = os.getenv("API_BASE_URL", "https://api.groq.com/openai/v1")
-MODEL_NAME: str = os.getenv("MODEL_NAME", "llama-3.3-70b-versatile")
-HF_TOKEN: Optional[str] = os.getenv("HF_TOKEN")
-# Separate the Groq/LLM API key from the HuggingFace token.
-# HF_TOKEN is for HF Space auth; GROQ_API_KEY is for LLM calls.
-# Falls back to HF_TOKEN for backwards compatibility.
-GROQ_API_KEY: Optional[str] = os.getenv("GROQ_API_KEY") or HF_TOKEN
+# CRITICAL: Use validator-injected environment variables, NOT hardcoded defaults
+API_BASE_URL: str = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+MODEL_NAME: str = os.getenv("MODEL_NAME", "meta-llama/Llama-3.3-70B-Instruct")
+API_KEY: Optional[str] = os.environ.get("API_KEY")  # NO default — validator-injected only
+HF_TOKEN: Optional[str] = os.environ.get("HF_TOKEN")  # Fallback for local development
 ENV_BASE_URL: str = os.getenv("ENV_BASE_URL", "https://samarthdave0305-cascade-failure-env.hf.space")
 LOCAL_IMAGE_NAME: str = os.environ.get("LOCAL_IMAGE_NAME", "cascade-guard:latest")
 DEBUG_LOGS: bool = os.getenv("DEBUG_LOGS", "0") == "1"
@@ -68,7 +66,7 @@ TEMPERATURE: float = 0.0
 MAX_TOKENS: int = 80   # action JSON ~ 50-60 chars / ~15 tokens; 80 is ample
 EVAL_MODE: str = os.environ.get("EVAL_MODE", "baseline")  # baseline | multiseed
 EVAL_SPLIT: str = os.environ.get("EVAL_SPLIT", "holdout")
-SCORE_EPS: float = 0.1
+SCORE_EPS: float = 0.01  # Strict epsilon: score range is [0.01, 0.99]
 BASELINE_RESULTS_PATH: str = os.environ.get("BASELINE_RESULTS_PATH", "baseline_results.json")
 
 # System prompt - ultra-compact to save context tokens
@@ -278,18 +276,19 @@ def _write_reproducibility_report(run_records: List[Dict[str, Any]]) -> None:
 
 
 def _clamp_score_open(value: float) -> float:
+    """Clamp to [0.01, 0.99] — strict open interval (no 0.0 or 1.0)."""
     try:
         v = float(value)
     except (TypeError, ValueError):
-        return SCORE_EPS
+        return 0.01
     if not math.isfinite(v):
-        return SCORE_EPS
-    return max(SCORE_EPS, min(1.0 - SCORE_EPS, v))
+        return 0.01
+    return max(0.01, min(0.99, v))
 
 
 def _sanitize_score(value: float) -> float:
     """
-    Guarantee the returned float is strictly in (0.0, 1.0).
+    Guarantee the returned float is strictly in (0.01, 0.99).
 
     CRITICAL ORDER: ROUND FIRST, then apply boundary checks.
     Doing the checks before rounding is wrong because:
@@ -300,19 +299,15 @@ def _sanitize_score(value: float) -> float:
     try:
         v = float(value)
     except (TypeError, ValueError):
-        return SCORE_EPS
+        return 0.01
     if not math.isfinite(v):
-        return SCORE_EPS
+        return 0.01
 
-    
+    # ROUND FIRST (to 4 decimals)
+    v = round(v, 4)
 
-    # ── THEN check boundaries ────────────────────────────────────────────
-    if v <= 0.0:
-        return SCORE_EPS
-    if v >= 1.0:
-        return 1.0 - SCORE_EPS
-
-    return v
+    # THEN check boundaries and clamp to [0.01, 0.99]
+    return min(max(v, 0.01), 0.99)
 
 
 # ---------------------------------------------------------------------------
@@ -1637,13 +1632,15 @@ async def run_task(
 # Main
 # ---------------------------------------------------------------------------
 async def main() -> None:
-    if not GROQ_API_KEY:
-        raise RuntimeError("Missing LLM API key. Set GROQ_API_KEY (preferred) or HF_TOKEN.")
-    if not HF_TOKEN and GROQ_API_KEY:
-        print("[WARN] HF_TOKEN is not set; continuing with GROQ_API_KEY.", file=sys.stderr, flush=True)
+    # Use validator-injected API_KEY, fallback to HF_TOKEN for local development
+    api_key = API_KEY or HF_TOKEN
+    if not api_key:
+        raise RuntimeError(
+            "Missing API key. Set API_KEY (validator) or HF_TOKEN (local dev)."
+        )
 
     client = OpenAI(
-        api_key=GROQ_API_KEY,
+        api_key=api_key,
         base_url=API_BASE_URL,
     )
     scores: List[float] = []
