@@ -50,7 +50,11 @@ def _clamp(value: float,
 
 
 def _safe(value: float) -> float:
-    
+    """
+    CRITICAL: ROUND FIRST → THEN CLAMP
+    This order is essential to prevent float precision edge cases.
+    Ex: 0.99996 would round to 1.0000, escape boundary check if checked first.
+    """
     try:
         v = float(value)
     except (TypeError, ValueError):
@@ -58,14 +62,11 @@ def _safe(value: float) -> float:
     if not math.isfinite(v):
         return SCORE_EPS
 
+    # ROUND FIRST (to 4 decimals)
+    v = round(v, 4)
 
-    # ---- THEN check boundary -----------------------------------------------
-    if v <= 0.0:
-        return SCORE_EPS
-    if v >= 1.0:
-        return _SCORE_HI
-
-    return v
+    # THEN CLAMP to safe boundaries
+    return min(max(v, SCORE_EPS), _SCORE_HI)
 
 
 # ---------------------------------------------------------------------------
