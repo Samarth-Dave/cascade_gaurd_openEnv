@@ -5,8 +5,10 @@ import copy
 import json
 import os
 import statistics
+import subprocess
 import sys
 from urllib.parse import urlparse
+from pathlib import Path
 from functools import lru_cache
 from typing import Any, Dict, List, Optional
 
@@ -64,6 +66,7 @@ TEMPERATURE: float = 0.0
 MAX_TOKENS: int = 80   # action JSON ~ 50-60 chars / ~15 tokens; 80 is ample
 EVAL_MODE: str = os.environ.get("EVAL_MODE", "baseline")  # baseline | multiseed
 EVAL_SPLIT: str = os.environ.get("EVAL_SPLIT", "holdout")
+SCORE_EPS: float = 1e-4
 
 # System prompt - ultra-compact to save context tokens
 SYSTEM_PROMPT = (
@@ -113,7 +116,42 @@ def _candidate_base_urls() -> List[str]:
     normalized_default = _normalize_base_url(ENV_BASE_URL)
     if normalized_default and normalized_default not in seen:
         candidates.append(normalized_default)
+
+    local_default = "http://localhost:8000"
+    if local_default not in seen:
+        candidates.append(local_default)
     return candidates
+
+
+def _docker_image_exists(image_name: str) -> bool:
+    try:
+        subprocess.run(
+            ["docker", "image", "inspect", image_name],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _build_local_docker_image(image_name: str) -> None:
+    repo_root = str(Path(__file__).resolve().parent)
+    result = subprocess.run(
+        ["docker", "build", "-t", image_name, repo_root],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        stderr_tail = (result.stderr or "")[-400:]
+        stdout_tail = (result.stdout or "")[-400:]
+        raise RuntimeError(
+            f"docker build failed for image {image_name} (exit={result.returncode}). "
+            f"stderr_tail={stderr_tail!r} stdout_tail={stdout_tail!r}"
+        )
 
 
 async def _connect_environment() -> CascadeGuardEnv:
@@ -134,6 +172,9 @@ async def _connect_environment() -> CascadeGuardEnv:
                 pass
 
     try:
+        if not _docker_image_exists(LOCAL_IMAGE_NAME):
+            _debug(f"[ENV] docker image missing, attempting build image={LOCAL_IMAGE_NAME}")
+            _build_local_docker_image(LOCAL_IMAGE_NAME)
         _debug(f"[ENV] trying docker image={LOCAL_IMAGE_NAME}")
         env = await CascadeGuardEnv.from_docker_image(LOCAL_IMAGE_NAME)
         _debug(f"[ENV] connected via docker image={LOCAL_IMAGE_NAME}")
@@ -153,6 +194,10 @@ def _debug(msg: str) -> None:
     # Keep stdout reserved for [START]/[STEP]/[END] lines only.
     if DEBUG_LOGS:
         print(msg, file=sys.stderr, flush=True)
+
+
+def _clamp_score_open(value: float) -> float:
+    return max(SCORE_EPS, min(1.0 - SCORE_EPS, float(value)))
 
 
 # ---------------------------------------------------------------------------
@@ -642,6 +687,35 @@ def _planner_rollout_score(
         reward_sum += float(getattr(obs, "reward", 0.0) or 0.0)
 
     return _planner_grade(task_id, sim), reward_sum
+
+
+def _fallback_proxy_grade(
+    final_sector_summary: Dict[str, float],
+    hospital_health_log: List[float],
+    failure_history: List[set[str]],
+    total_nodes: int,
+) -> float:
+    avg_health = (
+        sum(final_sector_summary.values()) / len(final_sector_summary)
+        if final_sector_summary
+        else 0.0
+    )
+    hospital_ok = 1.0
+    if hospital_health_log:
+        violations = sum(1 for h in hospital_health_log if h < 0.4)
+        hospital_ok = max(0.0, 1.0 - (violations / max(len(hospital_health_log), 1)))
+
+    no_blackout = 1.0 if final_sector_summary and all(v > 0.0 for v in final_sector_summary.values()) else 0.0
+
+    if failure_history:
+        peak_failed = max(len(step_failed) for step_failed in failure_history)
+    else:
+        peak_failed = 0
+    denom = max(total_nodes, 1)
+    cascade_contained = _clamp_score_open(1.0 - (peak_failed / denom))
+
+    raw = 0.35 * avg_health + 0.30 * hospital_ok + 0.20 * no_blackout + 0.15 * cascade_contained
+    return round(_clamp_score_open(raw), 4)
 
 
 def _select_planner_action(
@@ -1173,6 +1247,7 @@ async def run_task(
     recent_recover_outcomes: List[float] = []
 
     score: float = 0.0
+    success: bool = False
 
     try:
         for step in range(max_steps):
@@ -1366,7 +1441,13 @@ async def run_task(
         final_sector_summary = dict(state_data.sector_health) if state_data else {}
 
         if grade_fn is None:
-            score = 0.0
+            score = _fallback_proxy_grade(
+                final_sector_summary=final_sector_summary,
+                hospital_health_log=hospital_health_log,
+                failure_history=failure_history,
+                total_nodes=total_nodes,
+            )
+            _debug(f"[WARN] using proxy grade for task={task_id} score={score:.4f}")
         else:
             score = grade_fn(
                 task_id,
@@ -1386,6 +1467,9 @@ async def run_task(
         )
 
         success = last_done and all(v >= 0.5 for v in final_sector_summary.values())
+    except asyncio.CancelledError as exc:
+        success = False
+        _debug(f"[ERROR] run_task cancelled: {exc}")
     except Exception as exc:
         success = False
         _debug(f"[ERROR] run_task failed: {exc}")

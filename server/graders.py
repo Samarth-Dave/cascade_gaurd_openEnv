@@ -3,21 +3,24 @@ from __future__ import annotations
 from typing import Dict, List, Set
 
 
-def _clamp(value: float, lo: float = 0.0, hi: float = 1.0) -> float:
-    return max(lo, min(hi, value))
+SCORE_EPS: float = 1e-4
+
+
+def _clamp(value: float, lo: float = SCORE_EPS, hi: float = 1.0 - SCORE_EPS) -> float:
+    return max(lo, min(hi, float(value)))
 
 
 def _hospital_maintained_score(hospital_health_log: List[float]) -> float:
     total_steps = len(hospital_health_log)
     violations = sum(1 for h in hospital_health_log if h < 0.4)
     if violations == 0:
-        return 1.0
-    return max(0.0, 1.0 - violations / max(total_steps, 1))
+        return _clamp(1.0)
+    return _clamp(1.0 - violations / max(total_steps, 1))
 
 
 def _cascade_contained_score(failure_history: List[Set[str]], total_nodes: int) -> float:
     if not failure_history:
-        return 1.0
+        return _clamp(1.0)
     all_seen: Set[str] = set()
     for s in failure_history:
         all_seen.update(s)
@@ -34,7 +37,7 @@ def _dependency_order_score(dependency_order_log: List[int]) -> float:
 
 def _cascade_depth_score(cascade_depth_log: List[int], total_nodes: int) -> float:
     if not cascade_depth_log:
-        return 1.0
+        return _clamp(1.0)
     denom = max(total_nodes, 1)
     depth_ratio = sum(cascade_depth_log) / (len(cascade_depth_log) * denom)
     return _clamp(1.0 - depth_ratio)
