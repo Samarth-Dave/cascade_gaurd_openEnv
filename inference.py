@@ -19,7 +19,7 @@ from cascade_guard.client import CascadeGuardEnv
 from cascade_guard.models import CascadeAction
 from cascade_guard.tasks import TASK_CONFIGS, TASK_SEED_SPLITS
 
-# Local planner disabled — server-side CascadeEnvironment has _budget_total mismatch
+# Local planner disabled to avoid local/server behavior drift during evaluation.
 LocalCascadeEnvironment = None
 grade_episode = None
 
