@@ -1,3 +1,13 @@
 __pycache__/
 .venv/
 *.egg-info/
+ALL_3_FIXES_APPLIED.md
+COMPLETE_FIX_SUMMARY.md
+DISPATCHER_FIX_COMPLETE.md
+PHASE2_SUBMISSION_STATUS.md
+SCORE_CLAMPING_FIXES.md
+test_dispatcher_safety.py
+test_grader_clamp_safety.py
+validate_score_fixes.py
+baseline_results.json
+context.txt

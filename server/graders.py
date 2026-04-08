@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Dict, List, Set
 
 
@@ -7,7 +8,15 @@ SCORE_EPS: float = 1e-4
 
 
 def _clamp(value: float, lo: float = SCORE_EPS, hi: float = 1.0 - SCORE_EPS) -> float:
-    return max(lo, min(hi, float(value)))
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return SCORE_EPS
+    
+    if not math.isfinite(v):
+        return SCORE_EPS
+    
+    return max(lo, min(hi, v))
 
 
 def _hospital_maintained_score(hospital_health_log: List[float]) -> float:
@@ -229,4 +238,21 @@ def grade(task_id: str, **kwargs) -> float:
     """Dispatch to the appropriate grader for the given task_id."""
     if task_id not in GRADERS:
         raise KeyError(f"Unknown task_id {task_id!r}. Valid: {list(GRADERS)}")
-    return _clamp(round(float(GRADERS[task_id](**kwargs)), 4))
+
+    try:
+        raw = GRADERS[task_id](**kwargs)
+        raw = float(raw)
+    except (TypeError, ValueError):
+        return SCORE_EPS
+
+    if not math.isfinite(raw):
+        return SCORE_EPS
+
+    raw = round(raw, 4)
+
+    if raw <= 0.0:
+        return SCORE_EPS
+    if raw >= 1.0:
+        return 1.0 - SCORE_EPS
+
+    return raw

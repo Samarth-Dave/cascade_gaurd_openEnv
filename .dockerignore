@@ -9,7 +9,29 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .vscode/
-openenv_cascade_guard.egg-info/
+openenv_cascade_guard.egg-infso/
 PHASE_EVALUATION_RESULTS_README.md
 context.txt
 baseline_results.json
+
+# Docs
+*.md
+
+# Tests
+test_*.py
+validate_*.py
+
+# Local outputs
+baseline_results.json
+
+# Git
+.git
+.gitignore
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Dev files
+.vscode
+.idea

@@ -230,7 +230,7 @@ def _write_reproducibility_report(run_records: List[Dict[str, Any]]) -> None:
         task_summary[task_id] = {
             "runs": len(vals),
             "mean_score": _sanitize_score(statistics.mean(vals)),
-            "std_score": round(statistics.pstdev(vals), 4) if len(vals) > 1 else 0.0,
+            "std_score": round(statistics.pstdev(vals), 4) if len(vals) > 1 else round(SCORE_EPS, 4),
             "min_score": _sanitize_score(min(vals)),
             "max_score": _sanitize_score(max(vals)),
         }
@@ -275,11 +275,15 @@ def _sanitize_score(value: float) -> float:
         return SCORE_EPS
     if not math.isfinite(v):
         return SCORE_EPS
-    v = round(v, 4)
+    
+    # Clamp FIRST to safe range, THEN round (not before)
+    # This prevents rounding from creating boundary values (0.0 or 1.0)
     if v <= 0.0:
         return SCORE_EPS
     if v >= 1.0:
         return 1.0 - SCORE_EPS
+    
+    # Now safe to round - v is guaranteed in (0.0, 1.0) after clamping
     return v
 
 
@@ -781,12 +785,12 @@ def _fallback_proxy_grade(
     if not final_sector_summary:
         return _sanitize_score(0.5)
 
-    avg_health = (
+    avg_health = _clamp_score_open(
         sum(final_sector_summary.values()) / len(final_sector_summary)
         if final_sector_summary
         else 0.0
     )
-    hospital_ok = 1.0
+    hospital_ok = _clamp_score_open(1.0)
     if hospital_health_log:
         violations = sum(1 for h in hospital_health_log if h < 0.4)
         hospital_ok = _clamp_score_open(1.0 - (violations / max(len(hospital_health_log), 1)))
@@ -1554,7 +1558,7 @@ async def run_task(
                 dependency_order_log=dependency_order_log,
                 action_history=action_history,
             )
-        score = _sanitize_score(score)
+        # Graders already return _clamp(round(raw, 4)), no need to re-sanitize
         _debug(
             f"[GRADE] task={task_id} normalized_score={score:.4f} "
             f"final_sector_summary={final_sector_summary}"
@@ -1584,9 +1588,19 @@ async def run_task(
         score_value = float(score)
     except (TypeError, ValueError):
         score_value = float("nan")
-    if not (0.0 < score_value < 1.0):
-        _debug(f"[WARN] score out of range for task={task_id}: {score} - re-clamping")
-        score = _sanitize_score(score_value)
+    
+    # Final hard guard - explicit boundary clamping
+    if score_value <= 0.0:
+        _debug(f"[WARN] score <= 0.0 for task={task_id}: {score_value} - clamping to SCORE_EPS")
+        score = SCORE_EPS
+    elif score_value >= 1.0:
+        _debug(f"[WARN] score >= 1.0 for task={task_id}: {score_value} - clamping to 1.0-SCORE_EPS")
+        score = 1.0 - SCORE_EPS
+    elif not math.isfinite(score_value):
+        _debug(f"[WARN] score not finite for task={task_id}: {score_value} - clamping to SCORE_EPS")
+        score = SCORE_EPS
+    else:
+        score = round(score_value, 4)
 
     return score, rewards
 
