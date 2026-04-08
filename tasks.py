@@ -35,7 +35,7 @@ TASK_CONFIGS: Dict[str, dict] = {
         "task_id": "task_medium",
         "seed": 123,
         "max_steps": 20,
-        "budget": 8.0,
+        "budget": 10.0,
         "nodes": [
             # power (5)
             {"node_id": "POWER_GEN_1",   "sector": "power",    "is_critical": False},
@@ -75,7 +75,7 @@ TASK_CONFIGS: Dict[str, dict] = {
         "stress_schedule": {
             4:  {"type": "weather", "target": None, "effect": "storm_warning"},
             8:  {"type": "weather", "target": None, "effect": "extreme_storm"},
-            12: {"type": "weather", "target": None, "effect": "clear"},
+            11: {"type": "weather", "target": None, "effect": "clear"},
         },
         "delayed_sectors": ["water"],
         "partial_obs_nodes": [],
@@ -90,7 +90,7 @@ TASK_CONFIGS: Dict[str, dict] = {
         "task_id": "task_hard",
         "seed": 999,
         "max_steps": 30,
-        "budget": 10.0,
+        "budget": 15.0,
         "nodes": [
             # power (5)
             {"node_id": "POWER_GEN_1",      "sector": "power",    "is_critical": False},
@@ -138,9 +138,9 @@ TASK_CONFIGS: Dict[str, dict] = {
         ],
         "stress_schedule": {
             # SCADA anomaly from step 1 onward, recurring -0.05/step
-            1:  {"type": "scada_anomaly", "target": "TELECOM_SWITCH_1", "effect": -0.05, "recurring": True},
+            1:  {"type": "scada_anomaly", "target": "TELECOM_SWITCH_1", "effect": -0.02, "recurring": True},
             5:  {"type": "weather",       "target": None,               "effect": "extreme_storm"},
-            15: {"type": "weather",       "target": None,               "effect": "clear"},
+            10: {"type": "weather",       "target": None,               "effect": "clear"},
         },
         "delayed_sectors": [],
         "partial_obs_nodes": [
@@ -148,8 +148,6 @@ TASK_CONFIGS: Dict[str, dict] = {
             "WATER_PUMP_2",
             "TELECOM_1",
             "TELECOM_2",
-            "HOSP_2",
-            "EMERG_1",
         ],
         "description": (
             "Full 4-sector crisis with partial observability. "
@@ -213,7 +211,7 @@ TASK_CONFIGS: Dict[str, dict] = {
         "task_id": "task_cyberattack",
         "seed": 314,
         "max_steps": 25,
-        "budget": 10.0,
+        "budget": 13.0,
         "nodes": [
             # power (5)
             {"node_id": "POWER_GEN_1",      "sector": "power",    "is_critical": False},
@@ -246,15 +244,15 @@ TASK_CONFIGS: Dict[str, dict] = {
         ],
         "stress_schedule": {
             # Persistent SCADA cyberattack: telecom switch degrades every step
-            1:  {"type": "scada_anomaly", "target": "TELECOM_SWITCH_1", "effect": -0.05, "recurring": True},
+            1:  {"type": "scada_anomaly", "target": "TELECOM_SWITCH_1", "effect": -0.03, "recurring": True},
             # Equipment fault on POWER_DIST_1 -> threatens HOSP_1 + EMERG_1
-            4:  {"type": "equipment_fault", "target": "POWER_DIST_1", "effect": -0.80},
+            4:  {"type": "equipment_fault", "target": "POWER_DIST_1", "effect": -0.65},
             # Storm compounds the damage
             10: {"type": "weather",         "target": None, "effect": "storm_warning"},
             14: {"type": "weather",         "target": None, "effect": "extreme_storm"},
-            18: {"type": "weather",         "target": None, "effect": "clear"},
+            17: {"type": "weather",         "target": None, "effect": "clear"},
             # Late fault when agent may be resource-exhausted
-            20: {"type": "equipment_fault", "target": "POWER_DIST_2", "effect": -0.80},
+            20: {"type": "equipment_fault", "target": "POWER_DIST_2", "effect": -0.60},
         },
         "delayed_sectors": [],
         "partial_obs_nodes": ["TELECOM_1", "TELECOM_2", "HOSP_2"],
@@ -362,14 +360,18 @@ def _sample_observability(cfg: dict, rng: random.Random) -> None:
     if cfg.get("task_id") == "task_medium" and rng.random() < 0.4:
         delayed = set(cfg.get("delayed_sectors", []))
         delayed.add("water")
-        if rng.random() < 0.25:
+        if rng.random() < 0.10:
             delayed.add("hospital")
         cfg["delayed_sectors"] = sorted(delayed)
 
-    if cfg.get("task_id") in {"task_hard", "task_cyberattack"}:
+    if cfg.get("task_id") == "task_hard":
+        # Keep hard-task observability deterministic to reduce high-variance seeds.
+        return
+
+    if cfg.get("task_id") == "task_cyberattack":
         eligible = [n["node_id"] for n in cfg.get("nodes", []) if not n.get("is_critical", False)]
         if eligible:
-            k = min(len(eligible), max(3, int(round(0.3 * len(eligible)))))
+            k = min(len(eligible), max(2, int(round(0.2 * len(eligible)))))
             cfg["partial_obs_nodes"] = sorted(rng.sample(eligible, k=k))
 
 

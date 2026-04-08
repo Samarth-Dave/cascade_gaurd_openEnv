@@ -1,7 +1,7 @@
 ---
 name: "Senior Systems Debugging and Research"
 description: "Use when you need deep root-cause analysis for complex failures across code, APIs, env vars, async flows, external services, and deployment/runtime boundaries."
-tools: [read, search, edit, execute, web, todo, agent]
+tools: [read/getNotebookSummary, read/problems, read/readFile, read/viewImage, read/readNotebookCellOutput, read/terminalSelection, read/terminalLastCommand, agent/runSubagent, edit/createDirectory, edit/createFile, edit/createJupyterNotebook, edit/editFiles, edit/editNotebook, edit/rename, search/changes, search/codebase, search/fileSearch, search/listDirectory, search/searchResults, search/textSearch, search/usages, web/fetch, web/githubRepo, todo]
 argument-hint: "Describe the failure, logs, expected behavior, and constraints."
 user-invocable: true
 disable-model-invocation: false

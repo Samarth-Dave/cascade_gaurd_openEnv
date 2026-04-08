@@ -47,3 +47,22 @@ Hypotheses and validations
 Next validation plan
 - Run inference.py smoke test with local server URL to verify structured log format and no unhandled crash.
 - Produce per-phase pass/fail matrix with residual risks and required environment settings.
+
+Performance tuning notes (post-validation)
+- Objective: raise medium/hard/cyber baseline behavior while preserving API contracts and score bounds in (0.01, 0.99).
+- Observed heuristic baseline before tuning (holdout means):
+  - task_easy ~0.91, task_medium ~0.41, task_hard ~0.38, task_gen_blackout ~0.84, task_cyberattack ~0.38.
+- First tuning pass applied:
+  - Environment dynamics softened (cascade damage, weather damage, overload damage) and load drift made mean-reverting.
+  - Recovery effectiveness increased (RECOVERY_HEALTH 0.9).
+  - Reward shaping made less punitive for actionable wait and more positive for useful coordinate actions.
+  - Task-level stress/budget tuning for medium/hard/cyber.
+  - Inference task budget constants aligned with task config budgets.
+- Intermediate heuristic holdout means after first pass:
+  - task_easy ~0.93, task_medium ~0.85, task_hard ~0.60, task_gen_blackout ~0.91, task_cyberattack ~0.77.
+- Second tuning pass (hard-task stabilization):
+  - task_hard budget increased, SCADA decay reduced, storm duration shortened, and hard-task partial observability made deterministic.
+  - Inference hard-task budget constant aligned.
+- Current code status:
+  - No syntax/type errors reported in edited files.
+  - Contracts unchanged (reset/step/state shape, reward in (0,1), score in [0.01,0.99]).

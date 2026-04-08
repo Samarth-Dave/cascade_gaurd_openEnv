@@ -50,10 +50,10 @@ MAX_STEPS: Dict[str, int] = {
 }
 TASK_CONFIGS_BUDGET: Dict[str, float] = {
     "task_easy": 5.0,
-    "task_medium": 8.0,
-    "task_hard": 10.0,
+    "task_medium": 10.0,
+    "task_hard": 15.0,
     "task_gen_blackout": 8.0,
-    "task_cyberattack": 10.0,
+    "task_cyberattack": 13.0,
 }
 
 # Token budget: output only needs ~60 tokens for the JSON action.

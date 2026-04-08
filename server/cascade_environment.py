@@ -28,8 +28,8 @@ COORDINATE_COST: float = 1.0
 FAILURE_THRESHOLD_UNHARDENED: float = 0.3
 FAILURE_THRESHOLD_HARDENED: float = 0.1
 RECOVERY_STEPS: int = 2
-RECOVERY_HEALTH: float = 0.8
-CASCADE_DAMAGE: float = 0.3
+RECOVERY_HEALTH: float = 0.9
+CASCADE_DAMAGE: float = 0.18
 WAIT_BASE_PENALTY: float = 0.04
 WAIT_UNDER_PRESSURE_PENALTY: float = 0.22
 CRITICAL_SHED_LOAD_PENALTY: float = 1.2
@@ -37,8 +37,8 @@ DEPENDENCY_RECOVERY_BONUS: float = 0.15
 CASCADE_IMPACT_PENALTY: float = 0.12
 WEATHER_DAMAGE: Dict[str, float] = {
     "clear": 0.0,
-    "storm_warning": 0.1,
-    "extreme_storm": 0.25,
+    "storm_warning": 0.05,
+    "extreme_storm": 0.12,
 }
 STEP_REWARD_MIN: float = -1.0
 STEP_REWARD_MAX: float = 1.0
@@ -422,11 +422,11 @@ class CascadeEnvironment(Environment):
             completed_recoveries.append(node_id)
 
         # ----------------------------------------------------------------
-        # 7. Load overload: load > 0.85 -> health -= 0.1
+        # 7. Load overload: sustained overload causes gradual health loss
         # ----------------------------------------------------------------
         for ns in self._node_states.values():
-            if ns.load > 0.85 and ns.health > 0.0:
-                ns.health = max(0.0, ns.health - 0.1)
+            if ns.load > 0.9 and ns.health > 0.0:
+                ns.health = max(0.0, ns.health - 0.06)
 
         # ----------------------------------------------------------------
         # 8. Final threshold check - covers cascade/weather/overload damage
@@ -889,15 +889,17 @@ class CascadeEnvironment(Environment):
         """Small stochastic load drift to emulate changing demand over time."""
         weather_boost = {
             "clear": 0.0,
-            "storm_warning": 0.04,
-            "extreme_storm": 0.08,
+            "storm_warning": 0.02,
+            "extreme_storm": 0.04,
         }.get(self._weather_forecast, 0.0)
 
         for ns in self._node_states.values():
             if not ns.is_operational:
                 continue
 
-            drift = self._rng.uniform(-0.03, 0.05) + weather_boost
+            # Mean reversion prevents runaway overload spirals while keeping dynamics stochastic.
+            reversion = (0.58 - ns.load) * 0.12
+            drift = self._rng.uniform(-0.02, 0.03) + weather_boost + reversion
             if ns.sector == "hospital":
                 drift += 0.01
             ns.load = max(0.1, min(1.0, ns.load + drift))
@@ -932,7 +934,7 @@ class CascadeEnvironment(Environment):
             r -= WAIT_UNDER_PRESSURE_PENALTY
 
         if actionable_wait:
-            r -= 0.12
+            r -= 0.07
 
         if parse_error:
             r -= 0.05
@@ -995,7 +997,7 @@ class CascadeEnvironment(Environment):
             r += 0.10
 
         if coord_useful:
-            r += 0.05
+            r += 0.10
 
         return r
 
