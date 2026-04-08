@@ -6,6 +6,7 @@ import json
 import os
 import statistics
 import sys
+from urllib.parse import urlparse
 from functools import lru_cache
 from typing import Any, Dict, List, Optional
 
@@ -27,6 +28,11 @@ except Exception:
 API_BASE_URL: str = os.getenv("API_BASE_URL", "https://api.groq.com/openai/v1")
 MODEL_NAME: str = os.getenv("MODEL_NAME", "llama-3.3-70b-versatile")
 HF_TOKEN: Optional[str] = os.getenv("HF_TOKEN")
+# Separate the Groq/LLM API key from the HuggingFace token.
+# HF_TOKEN is for HF Space auth; GROQ_API_KEY is for LLM calls.
+# Falls back to HF_TOKEN for backwards compatibility.
+GROQ_API_KEY: Optional[str] = os.getenv("GROQ_API_KEY") or HF_TOKEN
+ENV_BASE_URL: str = os.getenv("ENV_BASE_URL", "https://samarthdave0305-cascade-failure-env.hf.space")
 LOCAL_IMAGE_NAME: str = os.environ.get("LOCAL_IMAGE_NAME", "cascade-guard:latest")
 DEBUG_LOGS: bool = os.getenv("DEBUG_LOGS", "0") == "1"
 
@@ -53,16 +59,16 @@ TASK_CONFIGS_BUDGET: Dict[str, float] = {
 }
 
 # Token budget: output only needs ~60 tokens for the JSON action.
-# Keeping max_tokens LOW is critical — Groq limits total context (input+output).
+# Keeping max_tokens LOW is critical - Groq limits total context (input+output).
 TEMPERATURE: float = 0.0
-MAX_TOKENS: int = 80   # action JSON ≈ 50-60 chars / ~15 tokens; 80 is ample
+MAX_TOKENS: int = 80   # action JSON ~ 50-60 chars / ~15 tokens; 80 is ample
 EVAL_MODE: str = os.environ.get("EVAL_MODE", "baseline")  # baseline | multiseed
 EVAL_SPLIT: str = os.environ.get("EVAL_SPLIT", "holdout")
 
-# System prompt — ultra-compact to save context tokens
+# System prompt - ultra-compact to save context tokens
 SYSTEM_PROMPT = (
     "You are an infrastructure resilience agent. "
-    "Output ONLY a single JSON line — no markdown, no explanation.\n"
+    "Output ONLY a single JSON line - no markdown, no explanation.\n"
     'Format: {"action_type": "harden|shed_load|coordinate|recover|wait", '
     '"target_node_id": "NODE_ID or null"}\n'
     "Rules (in order of priority): "
@@ -74,6 +80,75 @@ SYSTEM_PROMPT = (
 )
 
 
+def _normalize_base_url(raw_url: Optional[str]) -> Optional[str]:
+    if not raw_url:
+        return None
+    url = raw_url.strip().rstrip("/")
+    if not url:
+        return None
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        return None
+    if not parsed.netloc:
+        return None
+    return url
+
+
+def _candidate_base_urls() -> List[str]:
+    keys = [
+        "ENV_BASE_URL",
+        "OPENENV_BASE_URL",
+        "SPACE_URL",
+        "HF_SPACE_URL",
+        "PING_URL",
+    ]
+    candidates: List[str] = []
+    seen = set()
+    for key in keys:
+        normalized = _normalize_base_url(os.getenv(key))
+        if normalized and normalized not in seen:
+            candidates.append(normalized)
+            seen.add(normalized)
+
+    normalized_default = _normalize_base_url(ENV_BASE_URL)
+    if normalized_default and normalized_default not in seen:
+        candidates.append(normalized_default)
+    return candidates
+
+
+async def _connect_environment() -> CascadeGuardEnv:
+    connect_errors: List[str] = []
+
+    # Phase-2 validators can reach the deployed HF Space but may not have local image tags.
+    for base_url in _candidate_base_urls():
+        env = CascadeGuardEnv(base_url=base_url)
+        try:
+            await env.connect()
+            _debug(f"[ENV] connected via base_url={base_url}")
+            return env
+        except Exception as exc:
+            connect_errors.append(f"base_url={base_url} -> {exc}")
+            try:
+                await env.close()
+            except Exception:
+                pass
+
+    try:
+        _debug(f"[ENV] trying docker image={LOCAL_IMAGE_NAME}")
+        env = await CascadeGuardEnv.from_docker_image(LOCAL_IMAGE_NAME)
+        _debug(f"[ENV] connected via docker image={LOCAL_IMAGE_NAME}")
+        return env
+    except Exception as exc:
+        connect_errors.append(f"docker_image={LOCAL_IMAGE_NAME} -> {exc}")
+
+    details = " | ".join(connect_errors) if connect_errors else "no connection attempts were made"
+    raise RuntimeError(
+        "Failed to connect to CascadeGuard environment. "
+        "Set ENV_BASE_URL to your deployed HF Space URL or ensure Docker has the expected local image. "
+        f"Attempts: {details}"
+    )
+
+
 def _debug(msg: str) -> None:
     # Keep stdout reserved for [START]/[STEP]/[END] lines only.
     if DEBUG_LOGS:
@@ -81,11 +156,11 @@ def _debug(msg: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Prompt builder — MINIMAL to save context tokens
+# Prompt builder - MINIMAL to save context tokens
 # ---------------------------------------------------------------------------
 def _build_user_prompt(obs: Any, step: int, last_reward: float = 0.0) -> str:
     """Ultra-compact prompt. Target < 200 tokens even for 15-node tasks."""
-    # Only include non-trivial info — skip healthy/clean nodes
+    # Only include non-trivial info - skip healthy/clean nodes
     critical_lines = []
     for n in obs.nodes:
         # Skip fully healthy, unhardened, non-delayed, operational nodes
@@ -811,7 +886,7 @@ def _build_candidate_actions(
 
 
 # ---------------------------------------------------------------------------
-# Heuristic — runs every step, used before LLM for emergencies + early steps
+# Heuristic - runs every step, used before LLM for emergencies + early steps
 # ---------------------------------------------------------------------------
 def smart_heuristic(obs: Any, step: int) -> Optional[Dict]:
     nodes = obs.nodes
@@ -833,7 +908,7 @@ def smart_heuristic(obs: Any, step: int) -> Optional[Dict]:
         if recoverable:
             target = min(recoverable, key=lambda n: (not n.is_critical, n.health))
             return {"action_type": "recover", "target_node_id": target.node_id}
-        # No directly recoverable — find root of failure chain
+        # No directly recoverable - find root of failure chain
         failed_ids = {n.node_id for n in failed}
         root_failures = [
             n for n in failed
@@ -928,7 +1003,7 @@ def smart_heuristic(obs: Any, step: int) -> Optional[Dict]:
         if delayed_node:
             return {"action_type": "coordinate", "target_node_id": delayed_node.node_id}
     elif pending:
-        # Recoveries in flight, nothing urgent — just wait
+        # Recoveries in flight, nothing urgent - just wait
         return {"action_type": "wait", "target_node_id": None}
 
     return None  # Let the LLM decide
@@ -974,9 +1049,9 @@ async def _get_action(
             else:
                 _debug(f"[HEURISTIC] step={step} -> {heuristic_action}")
                 return json.dumps(heuristic_action), None
-        # No rule fired → fall through to LLM
+        # No rule fired -> fall through to LLM
 
-    # LLM path — single-turn only (no history), to keep context small
+    # LLM path - single-turn only (no history), to keep context small
     user_prompt = _build_user_prompt(obs, step, last_reward=last_reward)
     candidate_text = " | ".join(
         f"{a['action_type']}:{a.get('target_node_id')}" for a in candidate_actions
@@ -1031,7 +1106,7 @@ async def _get_action(
 
         except Exception as e:
             error_str = str(e)
-            # Rate limit or token limit — back off and retry
+            # Rate limit or token limit - back off and retry
             if "rate_limit" in error_str.lower() or "429" in error_str or "token" in error_str.lower():
                 _debug(f"[WARN] API limit (attempt {attempt+1}): {error_str[:80]}. Backing off {backoff}s")
                 await asyncio.sleep(backoff)
@@ -1088,7 +1163,7 @@ async def run_task(
             planner_env = None
             _debug(f"[PLANNER] init failed: {exc}")
 
-    # No persistent message history — each step is stateless LLM call.
+    # No persistent message history - each step is stateless LLM call.
     # This eliminates context growth entirely.
     messages: List[Dict] = []  # kept for heuristic logging only
     rewards: List[float] = []
@@ -1248,7 +1323,13 @@ async def run_task(
         # ---------------------------------------------------------------------------
         # Grader
         # ---------------------------------------------------------------------------
-        from cascade_guard.server.graders import grade
+        grade_fn = grade_episode
+        if grade_fn is None:
+            try:
+                from cascade_guard.server.graders import grade as grade_fn
+            except Exception as exc:
+                _debug(f"[WARN] grader import failed: {exc}")
+                grade_fn = None
 
         state_data = await env.state()
 
@@ -1284,18 +1365,21 @@ async def run_task(
 
         final_sector_summary = dict(state_data.sector_health) if state_data else {}
 
-        score = grade(
-            task_id,
-            failure_history=failure_history,
-            hospital_health_log=hospital_health_log,
-            final_sector_summary=final_sector_summary,
-            budget_spent=budget_spent,
-            budget_total=budget_total,
-            total_nodes=total_nodes,
-            cascade_depth_log=cascade_depth_log,
-            dependency_order_log=dependency_order_log,
-            action_history=action_history,
-        )
+        if grade_fn is None:
+            score = 0.0
+        else:
+            score = grade_fn(
+                task_id,
+                failure_history=failure_history,
+                hospital_health_log=hospital_health_log,
+                final_sector_summary=final_sector_summary,
+                budget_spent=budget_spent,
+                budget_total=budget_total,
+                total_nodes=total_nodes,
+                cascade_depth_log=cascade_depth_log,
+                dependency_order_log=dependency_order_log,
+                action_history=action_history,
+            )
         _debug(
             f"[GRADE] task={task_id} normalized_score={score:.4f} "
             f"final_sector_summary={final_sector_summary}"
@@ -1320,16 +1404,18 @@ async def run_task(
 # Main
 # ---------------------------------------------------------------------------
 async def main() -> None:
-    if not HF_TOKEN:
-        raise RuntimeError("Missing HF_TOKEN environment variable")
+    if not GROQ_API_KEY:
+        raise RuntimeError("Missing LLM API key. Set GROQ_API_KEY (preferred) or HF_TOKEN.")
+    if not HF_TOKEN and GROQ_API_KEY:
+        print("[WARN] HF_TOKEN is not set; continuing with GROQ_API_KEY.", file=sys.stderr, flush=True)
 
     client = OpenAI(
-        api_key=HF_TOKEN,
+        api_key=GROQ_API_KEY,
         base_url=API_BASE_URL,
     )
     scores: List[float] = []
 
-    env = await CascadeGuardEnv.from_docker_image(LOCAL_IMAGE_NAME)
+    env = await _connect_environment()
 
     try:
         if EVAL_MODE == "multiseed":

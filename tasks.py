@@ -59,13 +59,13 @@ TASK_CONFIGS: Dict[str, dict] = {
             {"source_id": "POWER_GEN_1",   "target_id": "POWER_TRANS_2"},
             {"source_id": "POWER_TRANS_1", "target_id": "POWER_DIST_1"},
             {"source_id": "POWER_TRANS_2", "target_id": "POWER_DIST_2"},
-            # water → power
+            # water -> power
             {"source_id": "POWER_DIST_1",  "target_id": "WATER_TREAT_1"},
             {"source_id": "POWER_DIST_1",  "target_id": "WATER_PUMP_1"},
             {"source_id": "POWER_DIST_2",  "target_id": "WATER_PUMP_2"},
             {"source_id": "WATER_PUMP_1",  "target_id": "WATER_DIST_1"},
             {"source_id": "WATER_PUMP_2",  "target_id": "WATER_DIST_1"},
-            # hospital → power + water
+            # hospital -> power + water
             {"source_id": "POWER_DIST_1",  "target_id": "HOSP_1"},
             {"source_id": "WATER_DIST_1",  "target_id": "HOSP_1"},
             {"source_id": "POWER_DIST_2",  "target_id": "HOSP_2"},
@@ -118,19 +118,19 @@ TASK_CONFIGS: Dict[str, dict] = {
             {"source_id": "POWER_GEN_1",      "target_id": "POWER_TRANS_2"},
             {"source_id": "POWER_TRANS_1",    "target_id": "POWER_DIST_1"},
             {"source_id": "POWER_TRANS_2",    "target_id": "POWER_DIST_2"},
-            # water → power
+            # water -> power
             {"source_id": "POWER_DIST_1",     "target_id": "WATER_TREAT_1"},
             {"source_id": "POWER_DIST_1",     "target_id": "WATER_PUMP_1"},
             {"source_id": "POWER_DIST_2",     "target_id": "WATER_PUMP_2"},
             {"source_id": "WATER_PUMP_1",     "target_id": "WATER_DIST_1"},
             {"source_id": "WATER_PUMP_2",     "target_id": "WATER_DIST_1"},
-            # hospital → power + water
+            # hospital -> power + water
             {"source_id": "POWER_DIST_1",     "target_id": "HOSP_1"},
             {"source_id": "WATER_DIST_1",     "target_id": "HOSP_1"},
             {"source_id": "POWER_DIST_2",     "target_id": "HOSP_2"},
             {"source_id": "WATER_DIST_1",     "target_id": "HOSP_2"},
             {"source_id": "POWER_DIST_1",     "target_id": "EMERG_1"},
-            # telecom → power
+            # telecom -> power
             {"source_id": "POWER_TRANS_1",    "target_id": "TELECOM_1"},
             {"source_id": "POWER_TRANS_2",    "target_id": "TELECOM_2"},
             {"source_id": "TELECOM_1",        "target_id": "TELECOM_SWITCH_1"},
@@ -160,7 +160,7 @@ TASK_CONFIGS: Dict[str, dict] = {
     },
 
     # ------------------------------------------------------------------
-    # Task 4: Root generator blackout — tests graph-centrality reasoning
+    # Task 4: Root generator blackout - tests graph-centrality reasoning
     # ------------------------------------------------------------------
     "task_gen_blackout": {
         "task_id": "task_gen_blackout",
@@ -174,7 +174,7 @@ TASK_CONFIGS: Dict[str, dict] = {
             {"node_id": "POWER_TRANS_2", "sector": "power",    "is_critical": False},
             {"node_id": "POWER_DIST_1",  "sector": "power",    "is_critical": False},
             {"node_id": "POWER_DIST_2",  "sector": "power",    "is_critical": False},
-            # hospital (3) — directly depend on power distribution
+            # hospital (3) - directly depend on power distribution
             {"node_id": "HOSP_1",        "sector": "hospital", "is_critical": True},
             {"node_id": "HOSP_2",        "sector": "hospital", "is_critical": True},
             {"node_id": "EMERG_1",       "sector": "hospital", "is_critical": False},
@@ -190,7 +190,7 @@ TASK_CONFIGS: Dict[str, dict] = {
             {"source_id": "POWER_DIST_1",  "target_id": "EMERG_1"},
         ],
         "stress_schedule": {
-            # Root node equipment fault — if not hardened, full TRANS→DIST→HOSP cascade
+            # Root node equipment fault - if not hardened, full TRANS->DIST->HOSP cascade
             3: {"type": "equipment_fault", "target": "POWER_GEN_1",  "effect": -0.85},
             # Second fault: a distribution node while still recovering root
             8: {"type": "equipment_fault", "target": "POWER_DIST_2", "effect": -0.80},
@@ -207,7 +207,7 @@ TASK_CONFIGS: Dict[str, dict] = {
     },
 
     # ------------------------------------------------------------------
-    # Task 5: Cyber-physical attack — persistent SCADA + multi-fault
+    # Task 5: Cyber-physical attack - persistent SCADA + multi-fault
     # ------------------------------------------------------------------
     "task_cyberattack": {
         "task_id": "task_cyberattack",
@@ -247,7 +247,7 @@ TASK_CONFIGS: Dict[str, dict] = {
         "stress_schedule": {
             # Persistent SCADA cyberattack: telecom switch degrades every step
             1:  {"type": "scada_anomaly", "target": "TELECOM_SWITCH_1", "effect": -0.05, "recurring": True},
-            # Equipment fault on POWER_DIST_1 → threatens HOSP_1 + EMERG_1
+            # Equipment fault on POWER_DIST_1 -> threatens HOSP_1 + EMERG_1
             4:  {"type": "equipment_fault", "target": "POWER_DIST_1", "effect": -0.80},
             # Storm compounds the damage
             10: {"type": "weather",         "target": None, "effect": "storm_warning"},

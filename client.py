@@ -33,7 +33,7 @@ class CascadeGuardEnv(EnvClient):
     async def state(self):
         return await super().state()
 
-    # ✅ ADD THIS
+    #  ADD THIS
     def _parse_result(self, data: dict) -> StepResult:
         observation = CascadeObservation(**data["observation"])
         return StepResult(
@@ -42,11 +42,11 @@ class CascadeGuardEnv(EnvClient):
             done=data.get("done", False)
         )
 
-    # ✅ ADD THIS
+    #  ADD THIS
     def _parse_state(self, data: dict):
         return CascadeState(**data)
 
-    # ✅ ADD THIS
+    #  ADD THIS
     def _step_payload(self, action: CascadeAction):
         return action.dict()
 

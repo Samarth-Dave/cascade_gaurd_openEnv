@@ -67,9 +67,9 @@ class _NodeState:
 
 
 class CascadeEnvironment(Environment):
-    """CascadeGuard OpenEnv environment — cross-sector infrastructure RL.
+    """CascadeGuard OpenEnv environment - cross-sector infrastructure RL.
 
-    VERSION 3 — Fixes all 6 structural bugs:
+    VERSION 3 - Fixes all 6 structural bugs:
 
     Bug 1  FIXED: reset() now accepts seed, episode_id, task_id, **kwargs
            so openenv framework passes the task_id correctly.
@@ -77,10 +77,10 @@ class CascadeEnvironment(Environment):
     Bug 2  FIXED: prev_health_map captured BEFORE stress events fire,
            giving accurate pre-step baseline for reward/newly_failed detection.
 
-    Bug 3  FIXED: _apply_threshold_update() called BEFORE cascade propagation
-           → cascade now correctly spreads from nodes that JUST failed this step.
+        Bug 3  FIXED: _apply_threshold_update() called BEFORE cascade propagation
+            -> cascade now correctly spreads from nodes that JUST failed this step.
 
-    Bug 4  FIXED: Unified hospital penalty — no double-counting between
+        Bug 4  FIXED: Unified hospital penalty - no double-counting between
            newly_failed loop and per-step degraded-hospital loop.
 
     Bug 5  FIXED: state() includes total_nodes so graders use correct denominator.
@@ -377,7 +377,7 @@ class CascadeEnvironment(Environment):
         # ----------------------------------------------------------------
         # BUG 3 FIX: Update operational status BEFORE cascade propagation.
         # Previously is_operational stayed True from last step even after a
-        # stress event dropped health below threshold — so cascade never
+        # stress event dropped health below threshold - so cascade never
         # propagated from a just-faulted node in the same step.
         # ----------------------------------------------------------------
         self._apply_threshold_update()
@@ -401,7 +401,7 @@ class CascadeEnvironment(Environment):
         self._apply_background_load_dynamics()
 
         # ----------------------------------------------------------------
-        # 6. Advance pending_recoveries (counter → 0 means health restored)
+        # 6. Advance pending_recoveries (counter -> 0 means health restored)
         # ----------------------------------------------------------------
         finished = []
         for node_id in list(self._pending_recoveries.keys()):
@@ -425,7 +425,7 @@ class CascadeEnvironment(Environment):
                 ns.health = max(0.0, ns.health - 0.1)
 
         # ----------------------------------------------------------------
-        # 8. Final threshold check — covers cascade/weather/overload damage
+        # 8. Final threshold check - covers cascade/weather/overload damage
         # ----------------------------------------------------------------
         self._apply_threshold_update()
 
@@ -919,7 +919,7 @@ class CascadeEnvironment(Environment):
                     r += 0.15
 
         # ----------------------------------------------------------------
-        # BUG 4 FIX: Unified hospital penalty — single consistent pass.
+        # BUG 4 FIX: Unified hospital penalty - single consistent pass.
         # Old code had two separate loops that could interact incorrectly.
         # New code: one loop categorises each hospital node into exactly
         # one bucket with a single penalty/reward.

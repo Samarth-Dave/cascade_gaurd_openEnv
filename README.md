@@ -1,3 +1,18 @@
+---
+title: CascadeGuard Environment
+emoji: ⚡
+colorFrom: blue
+colorTo: green
+sdk: docker
+pinned: false
+app_port: 8000
+base_path: /web
+tags:
+  - openenv
+  - reinforcement-learning
+  - infrastructure
+---
+
 # CascadeGuard Package
 
 CascadeGuard is an OpenEnv environment for cross-sector infrastructure resilience.
@@ -115,7 +130,11 @@ pip install -r server/requirements.txt
 Required environment variables for inference:
 - API_BASE_URL
 - MODEL_NAME
-- HF_TOKEN
+- GROQ_API_KEY (preferred)
+
+Optional fallback variables:
+- HF_TOKEN (legacy fallback if GROQ_API_KEY is not set)
+- ENV_BASE_URL (defaults to your HF Space URL and is used before Docker)
 
 ## 6. How to Run
 

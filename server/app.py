@@ -13,12 +13,12 @@ async def health():
     return {"status": "ok", "env": "cascade_guard"}
 
 
-# ✅ ADD THIS
+# Add CLI entrypoint for local execution
 def main():
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
 
 
-# ✅ MODIFY THIS
+# Use main() entrypoint when run as script
 if __name__ == "__main__":
     main()

@@ -149,7 +149,7 @@ def grade_gen_blackout(
 ) -> float:
     """
     Grader for task_gen_blackout.
-    Root generator cascades to hospitals — hard cascade containment test.
+    Root generator cascades to hospitals - hard cascade containment test.
     Weights: avg=0.25, hospital_maintained=0.40, no_blackout=0.25, cascade=0.10
     The unusually high hospital weight reflects that the whole scenario's
     point is protecting hospitals from a catastrophic root failure.
@@ -178,7 +178,7 @@ def grade_cyberattack(
 ) -> float:
     """
     Grader for task_cyberattack.
-    Sustained SCADA + compound faults + storm — the hardest scenario.
+    Sustained SCADA + compound faults + storm - the hardest scenario.
     Weights: avg=0.20, hospital=0.40, no_blackout=0.20, cascade=0.10, budget_eff=0.10
     """
     avg = sum(final_sector_summary.values()) / len(final_sector_summary) if final_sector_summary else 0.0
