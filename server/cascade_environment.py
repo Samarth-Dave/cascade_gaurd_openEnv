@@ -493,7 +493,9 @@ class CascadeEnvironment(Environment):
         hosp_nodes = [ns for ns in self._node_states.values() if ns.sector == "hospital"]
         min_hosp_health = min((ns.health for ns in hosp_nodes), default=1.0)
         self._hospital_health_log.append(min_hosp_health)
-        self._cascade_depth_log.append(cascade_impact_count)
+        # Keep depth proxy bounded by node count for stable grader semantics.
+        cascade_depth_proxy = min(cascade_impact_count, len(self._node_states))
+        self._cascade_depth_log.append(cascade_depth_proxy)
 
         # Advance coordinate clear counters
         expired = []

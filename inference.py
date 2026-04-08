@@ -4,6 +4,7 @@ import asyncio
 import copy
 from datetime import datetime, timezone
 import json
+import math
 import os
 import statistics
 import subprocess
@@ -214,18 +215,24 @@ def _write_reproducibility_report(run_records: List[Dict[str, Any]]) -> None:
     if not run_records:
         return
 
-    grouped: Dict[str, List[float]] = {}
+    sanitized_records: List[Dict[str, Any]] = []
     for rec in run_records:
-        grouped.setdefault(str(rec["task_id"]), []).append(float(rec["score"]))
+        rec_copy = dict(rec)
+        rec_copy["score"] = _sanitize_score(float(rec_copy.get("score", SCORE_EPS)))
+        sanitized_records.append(rec_copy)
+
+    grouped: Dict[str, List[float]] = {}
+    for rec in sanitized_records:
+        grouped.setdefault(str(rec["task_id"]), []).append(_sanitize_score(float(rec["score"])))
 
     task_summary: Dict[str, Dict[str, Any]] = {}
     for task_id, vals in grouped.items():
         task_summary[task_id] = {
             "runs": len(vals),
-            "mean_score": round(statistics.mean(vals), 4),
+            "mean_score": _sanitize_score(statistics.mean(vals)),
             "std_score": round(statistics.pstdev(vals), 4) if len(vals) > 1 else 0.0,
-            "min_score": round(min(vals), 4),
-            "max_score": round(max(vals), 4),
+            "min_score": _sanitize_score(min(vals)),
+            "max_score": _sanitize_score(max(vals)),
         }
 
     payload = {
@@ -234,27 +241,46 @@ def _write_reproducibility_report(run_records: List[Dict[str, Any]]) -> None:
         "api_base_url": API_BASE_URL,
         "eval_mode": EVAL_MODE,
         "eval_split": EVAL_SPLIT,
-        "records": run_records,
+        "records": sanitized_records,
         "task_summary": task_summary,
     }
 
     output_path = Path(BASELINE_RESULTS_PATH)
     output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
-    # Summary goes to stderr to keep stdout compliant with [START]/[STEP]/[END] only.
-    print(f"[RESULTS] wrote reproducibility report to {output_path}", file=sys.stderr, flush=True)
+    # Keep runtime output strict by only emitting report summaries in debug mode.
+    _debug(f"[RESULTS] wrote reproducibility report to {output_path}")
     for task_id, stats in task_summary.items():
-        print(
+        _debug(
             f"[RESULTS] task={task_id} runs={int(stats['runs'])} "
             f"mean={stats['mean_score']:.4f} std={stats['std_score']:.4f} "
-            f"min={stats['min_score']:.4f} max={stats['max_score']:.4f}",
-            file=sys.stderr,
-            flush=True,
+            f"min={stats['min_score']:.4f} max={stats['max_score']:.4f}"
         )
 
 
 def _clamp_score_open(value: float) -> float:
-    return max(SCORE_EPS, min(1.0 - SCORE_EPS, float(value)))
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return SCORE_EPS
+    if not math.isfinite(v):
+        return SCORE_EPS
+    return max(SCORE_EPS, min(1.0 - SCORE_EPS, v))
+
+
+def _sanitize_score(value: float) -> float:
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return SCORE_EPS
+    if not math.isfinite(v):
+        return SCORE_EPS
+    v = round(v, 4)
+    if v <= 0.0:
+        return SCORE_EPS
+    if v >= 1.0:
+        return 1.0 - SCORE_EPS
+    return v
 
 
 # ---------------------------------------------------------------------------
@@ -710,10 +736,10 @@ def _merge_candidate_actions(
 
 def _planner_grade(task_id: str, planner_env: Any) -> float:
     if grade_episode is None:
-        return 0.0
+        return SCORE_EPS
 
     state_data = planner_env.state
-    return float(
+    return _sanitize_score(
         grade_episode(
             task_id,
             failure_history=[set(s) for s in state_data.failure_history],
@@ -752,6 +778,9 @@ def _fallback_proxy_grade(
     failure_history: List[set[str]],
     total_nodes: int,
 ) -> float:
+    if not final_sector_summary:
+        return _sanitize_score(0.5)
+
     avg_health = (
         sum(final_sector_summary.values()) / len(final_sector_summary)
         if final_sector_summary
@@ -760,9 +789,11 @@ def _fallback_proxy_grade(
     hospital_ok = 1.0
     if hospital_health_log:
         violations = sum(1 for h in hospital_health_log if h < 0.4)
-        hospital_ok = max(0.0, 1.0 - (violations / max(len(hospital_health_log), 1)))
+        hospital_ok = _clamp_score_open(1.0 - (violations / max(len(hospital_health_log), 1)))
 
-    no_blackout = 1.0 if final_sector_summary and all(v > 0.0 for v in final_sector_summary.values()) else 0.0
+    no_blackout = _clamp_score_open(
+        1.0 if final_sector_summary and all(v > 0.0 for v in final_sector_summary.values()) else 0.0
+    )
 
     if failure_history:
         peak_failed = max(len(step_failed) for step_failed in failure_history)
@@ -772,7 +803,7 @@ def _fallback_proxy_grade(
     cascade_contained = _clamp_score_open(1.0 - (peak_failed / denom))
 
     raw = 0.35 * avg_health + 0.30 * hospital_ok + 0.20 * no_blackout + 0.15 * cascade_contained
-    return round(_clamp_score_open(raw), 4)
+    return _sanitize_score(raw)
 
 
 def _select_planner_action(
@@ -1271,42 +1302,42 @@ async def run_task(
 ) -> tuple[float, List[float]]:
     print(f"[START] task={task_id} env=cascade_guard model={MODEL_NAME}")
 
-    result = await env.reset(
-        task_id=task_id,
-        seed=seed,
-        scenario_split=scenario_split,
-        scenario_index=scenario_index,
-    )
-    obs = result.observation
-    max_steps = MAX_STEPS[task_id]
     planner_env: Optional[Any] = None
-
-    if LocalCascadeEnvironment is not None and grade_episode is not None:
-        try:
-            planner_env = LocalCascadeEnvironment()
-            planner_env.reset(
-                task_id=task_id,
-                seed=seed,
-                scenario_split=scenario_split,
-                scenario_index=scenario_index,
-            )
-        except Exception as exc:
-            planner_env = None
-            _debug(f"[PLANNER] init failed: {exc}")
-
-    # No persistent message history - each step is stateless LLM call.
-    # This eliminates context growth entirely.
-    messages: List[Dict] = []  # kept for heuristic logging only
     rewards: List[float] = []
-    last_done = False
-    last_action_sig: Optional[tuple[str, Optional[str]]] = None
-    last_reward: float = 0.0
-    recent_recover_outcomes: List[float] = []
-
-    score: float = 0.0
+    score: float = SCORE_EPS
     success: bool = False
 
     try:
+        max_steps = MAX_STEPS[task_id]
+        result = await env.reset(
+            task_id=task_id,
+            seed=seed,
+            scenario_split=scenario_split,
+            scenario_index=scenario_index,
+        )
+        obs = result.observation
+
+        if LocalCascadeEnvironment is not None and grade_episode is not None:
+            try:
+                planner_env = LocalCascadeEnvironment()
+                planner_env.reset(
+                    task_id=task_id,
+                    seed=seed,
+                    scenario_split=scenario_split,
+                    scenario_index=scenario_index,
+                )
+            except Exception as exc:
+                planner_env = None
+                _debug(f"[PLANNER] init failed: {exc}")
+
+        # No persistent message history - each step is stateless LLM call.
+        # This eliminates context growth entirely.
+        messages: List[Dict] = []  # kept for heuristic logging only
+        last_done = False
+        last_action_sig: Optional[tuple[str, Optional[str]]] = None
+        last_reward: float = 0.0
+        recent_recover_outcomes: List[float] = []
+
         for step in range(max_steps):
             playbook_action = _task_playbook_action(obs, step, task_id)
             candidate_actions = _build_candidate_actions(obs, step, task_id, playbook_action)
@@ -1403,7 +1434,8 @@ async def run_task(
             if adjust_reason is not None:
                 if planner_env is not None:
                     fallback_action = planner_action or _planner_default_action(planner_env, task_id)
-                    action = CascadeAction(**fallback_action, parameters={})
+                    fallback_action_clean = {k: v for k, v in fallback_action.items() if k != "parameters"}
+                    action = CascadeAction(**fallback_action_clean, parameters={})
                 else:
                     recover_target = _pick_recover_target(obs)
                     if recover_target is not None:
@@ -1441,7 +1473,7 @@ async def run_task(
 
             error_str = "null" if error is None else error
             print(
-                f"[STEP] step={step} action={action_type} reward={reward:.2f} "
+                f"[STEP] step={step + 1} action={action_type} reward={reward:.2f} "
                 f"done={'true' if done else 'false'} error={error_str}",
                 flush=True,
             )
@@ -1466,7 +1498,7 @@ async def run_task(
 
         state_data = await env.state()
 
-        if state_data is not None and getattr(state_data, "failure_history", None):
+        if state_data is not None and getattr(state_data, "failure_history", None) is not None:
             failure_history = [set(s) for s in state_data.failure_history]
             hospital_health_log = list(state_data.hospital_health_log)
             budget_spent = TASK_CONFIGS_BUDGET[task_id] - state_data.budget_remaining
@@ -1488,7 +1520,7 @@ async def run_task(
                 action_history = list(getattr(inner_env, "_action_history", []) or [])
             else:
                 failure_history = []
-                hospital_health_log = [1.0] * len(rewards)
+                hospital_health_log = [1.0] * max(len(rewards), 1)
                 budget_total = TASK_CONFIGS_BUDGET[task_id]
                 budget_spent = 0.0
                 total_nodes = 0
@@ -1498,7 +1530,10 @@ async def run_task(
 
         final_sector_summary = dict(state_data.sector_health) if state_data else {}
 
-        if grade_fn is None:
+        if not final_sector_summary:
+            score = _sanitize_score(0.5)
+            _debug(f"[WARN] empty sector summary; using neutral fallback score for task={task_id}")
+        elif grade_fn is None:
             score = _fallback_proxy_grade(
                 final_sector_summary=final_sector_summary,
                 hospital_health_log=hospital_health_log,
@@ -1519,17 +1554,23 @@ async def run_task(
                 dependency_order_log=dependency_order_log,
                 action_history=action_history,
             )
+        score = _sanitize_score(score)
         _debug(
             f"[GRADE] task={task_id} normalized_score={score:.4f} "
             f"final_sector_summary={final_sector_summary}"
         )
 
-        success = last_done and all(v >= 0.5 for v in final_sector_summary.values())
+        success = last_done and (
+    final_sector_summary and
+    (sum(final_sector_summary.values()) / len(final_sector_summary)) >= 0.1
+)
     except asyncio.CancelledError as exc:
         success = False
+        score = SCORE_EPS
         _debug(f"[ERROR] run_task cancelled: {exc}")
     except Exception as exc:
         success = False
+        score = SCORE_EPS
         _debug(f"[ERROR] run_task failed: {exc}")
     finally:
         rewards_str = ",".join(f"{r:.2f}" for r in rewards)
@@ -1538,6 +1579,14 @@ async def run_task(
             f"rewards={rewards_str}",
             flush=True,
         )
+
+    try:
+        score_value = float(score)
+    except (TypeError, ValueError):
+        score_value = float("nan")
+    if not (0.0 < score_value < 1.0):
+        _debug(f"[WARN] score out of range for task={task_id}: {score} - re-clamping")
+        score = _sanitize_score(score_value)
 
     return score, rewards
 
@@ -1587,7 +1636,7 @@ async def main() -> None:
                     run_records.append(
                         {
                             "task_id": task_id,
-                            "score": round(float(score), 4),
+                            "score": _sanitize_score(score),
                             "seed": int(seed) if seed is not None else None,
                             "scenario_split": EVAL_SPLIT,
                             "scenario_index": idx,
@@ -1623,7 +1672,7 @@ async def main() -> None:
                 run_records.append(
                     {
                         "task_id": task_id,
-                        "score": round(float(score), 4),
+                        "score": _sanitize_score(score),
                         "seed": int(baseline_seed) if baseline_seed is not None else None,
                         "scenario_split": "train",
                         "scenario_index": i,

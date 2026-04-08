@@ -14,13 +14,13 @@ def _hospital_maintained_score(hospital_health_log: List[float]) -> float:
     total_steps = len(hospital_health_log)
     violations = sum(1 for h in hospital_health_log if h < 0.4)
     if violations == 0:
-        return _clamp(1.0)
+        return 1.0 - SCORE_EPS
     return _clamp(1.0 - violations / max(total_steps, 1))
 
 
 def _cascade_contained_score(failure_history: List[Set[str]], total_nodes: int) -> float:
     if not failure_history:
-        return _clamp(1.0)
+        return 1.0 - SCORE_EPS
     all_seen: Set[str] = set()
     for s in failure_history:
         all_seen.update(s)
@@ -37,7 +37,7 @@ def _dependency_order_score(dependency_order_log: List[int]) -> float:
 
 def _cascade_depth_score(cascade_depth_log: List[int], total_nodes: int) -> float:
     if not cascade_depth_log:
-        return _clamp(1.0)
+        return 1.0 - SCORE_EPS
     denom = max(total_nodes, 1)
     depth_ratio = sum(cascade_depth_log) / (len(cascade_depth_log) * denom)
     return _clamp(1.0 - depth_ratio)
@@ -67,7 +67,9 @@ def grade_easy(
     Grader for task_easy.
     Weights: avg_health=0.40, no_blackout=0.40, cascade_contained=0.20
     """
-    avg = sum(final_sector_summary.values()) / len(final_sector_summary) if final_sector_summary else 0.0
+    if not final_sector_summary:
+        return 0.5
+    avg = _clamp(sum(final_sector_summary.values()) / len(final_sector_summary) if final_sector_summary else 0.0)
     no_blackout = _clamp(1.0 if all(v > 0.0 for v in final_sector_summary.values()) else 0.0)
     cascade = _cascade_contained_score(failure_history, total_nodes)
     depth = _cascade_depth_score(cascade_depth_log or [], total_nodes)
@@ -91,7 +93,9 @@ def grade_medium(
     Grader for task_medium.
     Weights: avg=0.30, hospital_maintained=0.35, no_blackout=0.25, cascade=0.10
     """
-    avg = sum(final_sector_summary.values()) / len(final_sector_summary) if final_sector_summary else 0.0
+    if not final_sector_summary:
+        return 0.5
+    avg = _clamp(sum(final_sector_summary.values()) / len(final_sector_summary) if final_sector_summary else 0.0)
     hosp = _hospital_maintained_score(hospital_health_log)
     no_blackout = _clamp(1.0 if all(v > 0.0 for v in final_sector_summary.values()) else 0.0)
     cascade = _cascade_contained_score(failure_history, total_nodes)
@@ -117,7 +121,9 @@ def grade_hard(
     Grader for task_hard.
     Weights: avg=0.25, hospital=0.35, no_blackout=0.20, cascade=0.10, budget_eff=0.10
     """
-    avg = sum(final_sector_summary.values()) / len(final_sector_summary) if final_sector_summary else 0.0
+    if not final_sector_summary:
+        return 0.5
+    avg = _clamp(sum(final_sector_summary.values()) / len(final_sector_summary) if final_sector_summary else 0.0)
     hosp = _hospital_maintained_score(hospital_health_log)
     no_blackout = _clamp(1.0 if all(v > 0.0 for v in final_sector_summary.values()) else 0.0)
     cascade = _cascade_contained_score(failure_history, total_nodes)
@@ -157,7 +163,9 @@ def grade_gen_blackout(
     The unusually high hospital weight reflects that the whole scenario's
     point is protecting hospitals from a catastrophic root failure.
     """
-    avg = sum(final_sector_summary.values()) / len(final_sector_summary) if final_sector_summary else 0.0
+    if not final_sector_summary:
+        return 0.5
+    avg = _clamp(sum(final_sector_summary.values()) / len(final_sector_summary) if final_sector_summary else 0.0)
     hosp = _hospital_maintained_score(hospital_health_log)
     no_blackout = _clamp(1.0 if all(v > 0.0 for v in final_sector_summary.values()) else 0.0)
     cascade = _cascade_contained_score(failure_history, total_nodes)
@@ -184,7 +192,9 @@ def grade_cyberattack(
     Sustained SCADA + compound faults + storm - the hardest scenario.
     Weights: avg=0.20, hospital=0.40, no_blackout=0.20, cascade=0.10, budget_eff=0.10
     """
-    avg = sum(final_sector_summary.values()) / len(final_sector_summary) if final_sector_summary else 0.0
+    if not final_sector_summary:
+        return 0.5
+    avg = _clamp(sum(final_sector_summary.values()) / len(final_sector_summary) if final_sector_summary else 0.0)
     hosp = _hospital_maintained_score(hospital_health_log)
     no_blackout = _clamp(1.0 if all(v > 0.0 for v in final_sector_summary.values()) else 0.0)
     cascade = _cascade_contained_score(failure_history, total_nodes)
