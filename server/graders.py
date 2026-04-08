@@ -68,12 +68,12 @@ def grade_easy(
     Weights: avg_health=0.40, no_blackout=0.40, cascade_contained=0.20
     """
     avg = sum(final_sector_summary.values()) / len(final_sector_summary) if final_sector_summary else 0.0
-    no_blackout = 1.0 if all(v > 0.0 for v in final_sector_summary.values()) else 0.0
+    no_blackout = _clamp(1.0 if all(v > 0.0 for v in final_sector_summary.values()) else 0.0)
     cascade = _cascade_contained_score(failure_history, total_nodes)
     depth = _cascade_depth_score(cascade_depth_log or [], total_nodes)
 
     raw = 0.35 * avg + 0.35 * no_blackout + 0.20 * cascade + 0.10 * depth
-    return round(_clamp(raw), 4)
+    return _clamp(round(raw, 4))
 
 
 def grade_medium(
@@ -93,13 +93,13 @@ def grade_medium(
     """
     avg = sum(final_sector_summary.values()) / len(final_sector_summary) if final_sector_summary else 0.0
     hosp = _hospital_maintained_score(hospital_health_log)
-    no_blackout = 1.0 if all(v > 0.0 for v in final_sector_summary.values()) else 0.0
+    no_blackout = _clamp(1.0 if all(v > 0.0 for v in final_sector_summary.values()) else 0.0)
     cascade = _cascade_contained_score(failure_history, total_nodes)
     depth = _cascade_depth_score(cascade_depth_log or [], total_nodes)
     dep_order = _dependency_order_score(dependency_order_log or [])
 
     raw = 0.25 * avg + 0.30 * hosp + 0.20 * no_blackout + 0.10 * cascade + 0.10 * depth + 0.05 * dep_order
-    return round(_clamp(raw), 4)
+    return _clamp(round(raw, 4))
 
 
 def grade_hard(
@@ -119,7 +119,7 @@ def grade_hard(
     """
     avg = sum(final_sector_summary.values()) / len(final_sector_summary) if final_sector_summary else 0.0
     hosp = _hospital_maintained_score(hospital_health_log)
-    no_blackout = 1.0 if all(v > 0.0 for v in final_sector_summary.values()) else 0.0
+    no_blackout = _clamp(1.0 if all(v > 0.0 for v in final_sector_summary.values()) else 0.0)
     cascade = _cascade_contained_score(failure_history, total_nodes)
     budget_efficiency = _clamp(1.0 - (budget_spent / max(budget_total, 1e-9)))
     depth = _cascade_depth_score(cascade_depth_log or [], total_nodes)
@@ -136,7 +136,7 @@ def grade_hard(
         + 0.05 * dep_order
         + 0.05 * intervention
     )
-    return round(_clamp(raw), 4)
+    return _clamp(round(raw, 4))
 
 
 def grade_gen_blackout(
@@ -159,13 +159,13 @@ def grade_gen_blackout(
     """
     avg = sum(final_sector_summary.values()) / len(final_sector_summary) if final_sector_summary else 0.0
     hosp = _hospital_maintained_score(hospital_health_log)
-    no_blackout = 1.0 if all(v > 0.0 for v in final_sector_summary.values()) else 0.0
+    no_blackout = _clamp(1.0 if all(v > 0.0 for v in final_sector_summary.values()) else 0.0)
     cascade = _cascade_contained_score(failure_history, total_nodes)
     depth = _cascade_depth_score(cascade_depth_log or [], total_nodes)
     dep_order = _dependency_order_score(dependency_order_log or [])
 
     raw = 0.20 * avg + 0.35 * hosp + 0.20 * no_blackout + 0.10 * cascade + 0.10 * depth + 0.05 * dep_order
-    return round(_clamp(raw), 4)
+    return _clamp(round(raw, 4))
 
 
 def grade_cyberattack(
@@ -186,7 +186,7 @@ def grade_cyberattack(
     """
     avg = sum(final_sector_summary.values()) / len(final_sector_summary) if final_sector_summary else 0.0
     hosp = _hospital_maintained_score(hospital_health_log)
-    no_blackout = 1.0 if all(v > 0.0 for v in final_sector_summary.values()) else 0.0
+    no_blackout = _clamp(1.0 if all(v > 0.0 for v in final_sector_summary.values()) else 0.0)
     cascade = _cascade_contained_score(failure_history, total_nodes)
     budget_efficiency = _clamp(1.0 - (budget_spent / max(budget_total, 1e-9)))
     depth = _cascade_depth_score(cascade_depth_log or [], total_nodes)
@@ -203,7 +203,7 @@ def grade_cyberattack(
         + 0.05 * dep_order
         + 0.05 * intervention
     )
-    return round(_clamp(raw), 4)
+    return _clamp(round(raw, 4))
 
 
 GRADERS = {
@@ -219,4 +219,4 @@ def grade(task_id: str, **kwargs) -> float:
     """Dispatch to the appropriate grader for the given task_id."""
     if task_id not in GRADERS:
         raise KeyError(f"Unknown task_id {task_id!r}. Valid: {list(GRADERS)}")
-    return GRADERS[task_id](**kwargs)
+    return _clamp(round(float(GRADERS[task_id](**kwargs)), 4))

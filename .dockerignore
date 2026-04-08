@@ -1,0 +1,15 @@
+.git/
+.github/
+.venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.vscode/
+openenv_cascade_guard.egg-info/
+PHASE_EVALUATION_RESULTS_README.md
+context.txt
+baseline_results.json

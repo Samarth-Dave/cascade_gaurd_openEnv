@@ -41,6 +41,7 @@ WEATHER_DAMAGE: Dict[str, float] = {
 }
 STEP_REWARD_MIN: float = -1.0
 STEP_REWARD_MAX: float = 1.0
+STEP_REWARD_EPS: float = 1e-4
 
 
 class _NodeState:
@@ -518,7 +519,13 @@ class CascadeEnvironment(Environment):
         self._done = done
 
         raw_reward = reward
-        reward = max(STEP_REWARD_MIN, min(STEP_REWARD_MAX, reward))
+        clipped_reward = max(STEP_REWARD_MIN, min(STEP_REWARD_MAX, reward))
+        reward_span = STEP_REWARD_MAX - STEP_REWARD_MIN
+        if reward_span <= 0:
+            normalized_reward = 0.5
+        else:
+            normalized_reward = (clipped_reward - STEP_REWARD_MIN) / reward_span
+        normalized_reward = max(STEP_REWARD_EPS, min(1.0 - STEP_REWARD_EPS, normalized_reward))
 
         info: Dict[str, Any] = {
             "step": self._step,
@@ -532,10 +539,12 @@ class CascadeEnvironment(Environment):
             "weather": self._weather_forecast,
             "task_id": self._task_id,
             "raw_reward": round(raw_reward, 4),
-            "reward_clipped": raw_reward != reward,
+            "clipped_reward": round(clipped_reward, 4),
+            "normalized_reward": round(normalized_reward, 4),
+            "reward_clipped": raw_reward != clipped_reward,
         }
 
-        obs.reward = round(reward, 4)
+        obs.reward = round(normalized_reward, 4)
         obs.done = done
         obs.metadata = info
         return obs

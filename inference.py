@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+from datetime import datetime, timezone
 import json
 import os
 import statistics
@@ -67,6 +68,7 @@ MAX_TOKENS: int = 80   # action JSON ~ 50-60 chars / ~15 tokens; 80 is ample
 EVAL_MODE: str = os.environ.get("EVAL_MODE", "baseline")  # baseline | multiseed
 EVAL_SPLIT: str = os.environ.get("EVAL_SPLIT", "holdout")
 SCORE_EPS: float = 1e-4
+BASELINE_RESULTS_PATH: str = os.environ.get("BASELINE_RESULTS_PATH", "baseline_results.json")
 
 # System prompt - ultra-compact to save context tokens
 SYSTEM_PROMPT = (
@@ -194,6 +196,61 @@ def _debug(msg: str) -> None:
     # Keep stdout reserved for [START]/[STEP]/[END] lines only.
     if DEBUG_LOGS:
         print(msg, file=sys.stderr, flush=True)
+
+
+def _extract_raw_step_reward(observation: Any, fallback_reward: float) -> float:
+    metadata = getattr(observation, "metadata", None)
+    if isinstance(metadata, dict):
+        raw_reward = metadata.get("clipped_reward", metadata.get("raw_reward"))
+        if raw_reward is not None:
+            try:
+                return float(raw_reward)
+            except (TypeError, ValueError):
+                pass
+    return float(fallback_reward)
+
+
+def _write_reproducibility_report(run_records: List[Dict[str, Any]]) -> None:
+    if not run_records:
+        return
+
+    grouped: Dict[str, List[float]] = {}
+    for rec in run_records:
+        grouped.setdefault(str(rec["task_id"]), []).append(float(rec["score"]))
+
+    task_summary: Dict[str, Dict[str, Any]] = {}
+    for task_id, vals in grouped.items():
+        task_summary[task_id] = {
+            "runs": len(vals),
+            "mean_score": round(statistics.mean(vals), 4),
+            "std_score": round(statistics.pstdev(vals), 4) if len(vals) > 1 else 0.0,
+            "min_score": round(min(vals), 4),
+            "max_score": round(max(vals), 4),
+        }
+
+    payload = {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "model_name": MODEL_NAME,
+        "api_base_url": API_BASE_URL,
+        "eval_mode": EVAL_MODE,
+        "eval_split": EVAL_SPLIT,
+        "records": run_records,
+        "task_summary": task_summary,
+    }
+
+    output_path = Path(BASELINE_RESULTS_PATH)
+    output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    # Summary goes to stderr to keep stdout compliant with [START]/[STEP]/[END] only.
+    print(f"[RESULTS] wrote reproducibility report to {output_path}", file=sys.stderr, flush=True)
+    for task_id, stats in task_summary.items():
+        print(
+            f"[RESULTS] task={task_id} runs={int(stats['runs'])} "
+            f"mean={stats['mean_score']:.4f} std={stats['std_score']:.4f} "
+            f"min={stats['min_score']:.4f} max={stats['max_score']:.4f}",
+            file=sys.stderr,
+            flush=True,
+        )
 
 
 def _clamp_score_open(value: float) -> float:
@@ -1372,12 +1429,13 @@ async def run_task(
                     planner_env = None
             obs = result.observation
             reward = result.reward
+            raw_reward = _extract_raw_step_reward(obs, reward)
             done = result.done
             rewards.append(reward)
-            last_reward = float(reward)
+            last_reward = raw_reward
             last_action_sig = (action.action_type, action.target_node_id)
             if action.action_type == "recover":
-                recent_recover_outcomes.append(float(reward))
+                recent_recover_outcomes.append(raw_reward)
                 if len(recent_recover_outcomes) > 4:
                     recent_recover_outcomes.pop(0)
 
@@ -1498,6 +1556,7 @@ async def main() -> None:
         base_url=API_BASE_URL,
     )
     scores: List[float] = []
+    run_records: List[Dict[str, Any]] = []
 
     env = await _connect_environment()
 
@@ -1525,6 +1584,15 @@ async def main() -> None:
                     )
                     task_scores.append(score)
                     scores.append(score)
+                    run_records.append(
+                        {
+                            "task_id": task_id,
+                            "score": round(float(score), 4),
+                            "seed": int(seed) if seed is not None else None,
+                            "scenario_split": EVAL_SPLIT,
+                            "scenario_index": idx,
+                        }
+                    )
 
                 task_stats[task_id] = task_scores
                 if task_scores:
@@ -1537,17 +1605,39 @@ async def main() -> None:
                     )
         else:
             for i, task_id in enumerate(TASK_NAMES):
+                seed_list = TASK_SEED_SPLITS.get(task_id, {}).get("train", [])
+                baseline_seed = seed_list[i % len(seed_list)] if seed_list else None
                 if i > 0:
                     # Pause between tasks to let rate limit window reset
                     _debug("[INFO] Pausing 5s before next task...")
                     await asyncio.sleep(5)
-                score, _ = await run_task(env, client, task_id, scenario_split="train", scenario_index=i)
+                score, _ = await run_task(
+                    env,
+                    client,
+                    task_id,
+                    seed=baseline_seed,
+                    scenario_split="train",
+                    scenario_index=i,
+                )
                 scores.append(score)
+                run_records.append(
+                    {
+                        "task_id": task_id,
+                        "score": round(float(score), 4),
+                        "seed": int(baseline_seed) if baseline_seed is not None else None,
+                        "scenario_split": "train",
+                        "scenario_index": i,
+                    }
+                )
     finally:
         try:
             await env.close()
         except Exception as e:
             _debug(f"[DEBUG] env.close() error: {e}")
+        try:
+            _write_reproducibility_report(run_records)
+        except Exception as exc:
+            print(f"[WARN] failed to write reproducibility report: {exc}", file=sys.stderr, flush=True)
 
 
 if __name__ == "__main__":

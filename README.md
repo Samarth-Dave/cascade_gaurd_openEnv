@@ -49,6 +49,35 @@ Current task set:
 - task_gen_blackout: root generator blackout cascade
 - task_cyberattack: cyber-physical compound attack
 
+### Task Objectives and Grader Criteria
+
+- task_easy (easy)
+  - Objective: stabilize a power-only network after a single equipment fault.
+  - Grader signals: average sector health, blackout avoidance, cascade containment, and low cascade depth.
+  - Expected behavior: proactive hardening and fast recovery sequencing.
+
+- task_medium (medium)
+  - Objective: maintain power, water, and hospitals through storm escalation with delayed water observations.
+  - Grader signals: average health, hospital maintenance, blackout avoidance, cascade containment, depth, and dependency-order correctness.
+  - Expected behavior: coordination under delayed telemetry and dependency-safe recoveries.
+
+- task_hard (hard)
+  - Objective: manage four sectors with partial observability, recurring SCADA degradation, and weather stress.
+  - Grader signals: medium metrics plus budget efficiency and intervention efficiency.
+  - Expected behavior: budget triage, critical-node protection, and failure-chain-aware recovery.
+
+- task_gen_blackout (hard+ specialized)
+  - Objective: survive a root-generator failure chain and a follow-up distribution fault.
+  - Grader signals: high emphasis on hospital continuity plus blackout/cascade control.
+  - Expected behavior: centrality-aware hardening (root and backbone before leaves).
+
+- task_cyberattack (hardest)
+  - Objective: withstand persistent cyber-physical degradation plus multiple faults and storm pressure.
+  - Grader signals: hospital continuity, blackout prevention, cascade control, budget/intervention efficiency.
+  - Expected behavior: sustained threat management over long horizons.
+
+All grader outputs are deterministic and bounded strictly inside (0, 1) for each task run.
+
 ## 2. Action Space
 
 Example actions:
@@ -112,18 +141,19 @@ Reward design intent:
 - Uses terminal shaping for overall sector outcomes, while preserving dense
   step-level signals for learning stability.
 
+Runtime reward contract:
+- Exposed step reward is normalized and clamped strictly to (0.0, 1.0) for evaluator compatibility.
+- Raw shaped reward is still available in observation metadata as `raw_reward`.
+
 ## 5. Setup Instructions
 
 ```bash
-pip install -r requirements.txt
-python inference.py
+pip install -e .
 ```
 
-If your local clone does not include a root requirements file, use one of:
+Alternative server-only install:
 
 ```bash
-pip install -e .
-# or
 pip install -r server/requirements.txt
 ```
 
@@ -156,4 +186,48 @@ Health check:
 curl http://localhost:8000/health
 ```
 
-You can then run inference/evaluation against the running server.
+Run baseline inference:
+
+```bash
+python inference.py
+```
+
+## 7. Baseline Inference and Reproducibility
+
+The baseline runner writes a reproducibility artifact to `baseline_results.json`
+by default (override with `BASELINE_RESULTS_PATH`).
+
+The artifact includes:
+- timestamp and model config
+- per-run records (task_id, seed, split, scenario index, score)
+- per-task summary (runs, mean/std/min/max)
+
+Recommended reproducibility run commands:
+
+```bash
+# Single-run baseline (train split, deterministic seed schedule)
+python inference.py
+
+# Multi-seed evaluation (holdout split)
+EVAL_MODE=multiseed EVAL_SPLIT=holdout python inference.py
+```
+
+Reference baseline snapshot (holdout, 2 seeds each):
+
+| task_id | sample scores | mean |
+|---|---|---:|
+| task_easy | 0.8900, 0.8900 | 0.8900 |
+| task_medium | 0.3418, 0.3359 | 0.3389 |
+| task_hard | 0.3718, 0.3648 | 0.3683 |
+| task_gen_blackout | 0.7563, 0.7263 | 0.7413 |
+| task_cyberattack | 0.2480, 0.2797 | 0.2639 |
+
+## 8. Docker and Submission Hardening
+
+- Docker build context is constrained via `.dockerignore` to reduce noisy or
+  oversized uploads.
+- Run pre-submit checks before submission:
+
+```bash
+./validate-submission.sh <your_hf_space_url>
+```
