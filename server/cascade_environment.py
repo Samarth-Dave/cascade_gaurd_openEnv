@@ -96,6 +96,7 @@ class CascadeEnvironment(Environment):
         self._step: int = 0
         self._node_states: Dict[str, _NodeState] = {}
         self._edge_states: Dict[str, bool] = {}
+        self._budget_total: float = 0.0
         self._budget: float = 0.0
         self._pending_recoveries: Dict[str, int] = {}
         self._sector_delays: Dict[str, int] = {}
@@ -556,6 +557,7 @@ class CascadeEnvironment(Environment):
     @property
     def state(self) -> CascadeState:
         sector_health: Dict[str, float] = self._compute_sector_summary()
+        budget_total = float(getattr(self, "_budget_total", self._budget))
         
         # Compute episode score using the grader
         failure_history_sets = [set(s) for s in self._failure_history]
@@ -564,16 +566,16 @@ class CascadeEnvironment(Environment):
             failure_history=failure_history_sets,
             hospital_health_log=self._hospital_health_log,
             final_sector_summary=sector_health,
-            budget_spent=self._budget_total - self._budget,
-            budget_total=self._budget_total,
+            budget_spent=budget_total - self._budget,
+            budget_total=budget_total,
             total_nodes=len(self._node_states),
             cascade_depth_log=self._cascade_depth_log,
             dependency_order_log=self._dependency_order_log,
             action_history=self._action_history,
         )
 
-# 🔥 ADD THIS LINE
-        episode_score = max(0.1, min(0.99, float(episode_score)))
+        # Keep score strictly in the evaluator-accepted open interval.
+        episode_score = max(0.01, min(0.99, float(episode_score)))
         
         return CascadeState(
             episode_id=self._episode_id,
