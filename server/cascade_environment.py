@@ -165,6 +165,7 @@ class CascadeEnvironment(Environment):
         cfg = materialize_task_config(self._task_id, seed=int(resolved_seed), split=scenario_split)
         self._config = cfg
         self._max_steps = cfg["max_steps"]
+        self._budget_total = cfg["budget"]  # Store initial budget for computing budget_spent
         self._budget = cfg["budget"]
         self._step = 0
         self._done = False
@@ -570,6 +571,9 @@ class CascadeEnvironment(Environment):
             dependency_order_log=self._dependency_order_log,
             action_history=self._action_history,
         )
+
+# 🔥 ADD THIS LINE
+        episode_score = max(0.1, min(0.99, float(episode_score)))
         
         return CascadeState(
             episode_id=self._episode_id,
