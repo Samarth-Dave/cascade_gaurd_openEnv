@@ -18,6 +18,7 @@ from cascade_guard.models import (
     ObservationDiagnostics,
 )
 from cascade_guard.tasks import TASK_CONFIGS, materialize_task_config, resolve_seed
+from cascade_guard.server.graders import grade
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -554,12 +555,29 @@ class CascadeEnvironment(Environment):
     @property
     def state(self) -> CascadeState:
         sector_health: Dict[str, float] = self._compute_sector_summary()
+        
+        # Compute episode score using the grader
+        failure_history_sets = [set(s) for s in self._failure_history]
+        episode_score = grade(
+            task_id=self._task_id,
+            failure_history=failure_history_sets,
+            hospital_health_log=self._hospital_health_log,
+            final_sector_summary=sector_health,
+            budget_spent=self._budget_total - self._budget,
+            budget_total=self._budget_total,
+            total_nodes=len(self._node_states),
+            cascade_depth_log=self._cascade_depth_log,
+            dependency_order_log=self._dependency_order_log,
+            action_history=self._action_history,
+        )
+        
         return CascadeState(
             episode_id=self._episode_id,
             step_count=self._step,
             task_id=self._task_id,
             budget_remaining=self._budget,
             sector_health=sector_health,
+            score=episode_score,
             # BUG 5 FIX: include total_nodes so graders use the correct denominator
             total_nodes=len(self._node_states),
             failure_history=[list(s) for s in self._failure_history],

@@ -97,6 +97,7 @@ class CascadeState(State):
     task_id: str = ""
     budget_remaining: float = 0.0
     sector_health: Dict[str, float] = {}
+    score: float = 0.5                      # episode score [0, 1], computed by grader
     total_nodes: int = 0                    # actual node count for grader denominator
     # Included for grader access when running via Docker (not available in obs)
     failure_history: List[List[str]] = []       # per-step list of failed node IDs

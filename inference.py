@@ -1696,7 +1696,7 @@ async def main() -> None:
                     )
         else:
             for i, task_id in enumerate(TASK_NAMES):
-                seed_list = TASK_SEED_SPLITS.get(task_id, {}).get("train", [])
+                seed_list = TASK_SEED_SPLITS.get(task_id, {}).get(EVAL_SPLIT, [])
                 baseline_seed = seed_list[i % len(seed_list)] if seed_list else None
                 if i > 0:
                     # Pause between tasks to let rate limit window reset
@@ -1707,7 +1707,7 @@ async def main() -> None:
                     client,
                     task_id,
                     seed=baseline_seed,
-                    scenario_split="train",
+                    scenario_split=EVAL_SPLIT,
                     scenario_index=i,
                 )
                 scores.append(score)
@@ -1716,7 +1716,7 @@ async def main() -> None:
                         "task_id": task_id,
                         "score": _sanitize_score(score),
                         "seed": int(baseline_seed) if baseline_seed is not None else None,
-                        "scenario_split": "train",
+                        "scenario_split": EVAL_SPLIT,
                         "scenario_index": i,
                     }
                 )
