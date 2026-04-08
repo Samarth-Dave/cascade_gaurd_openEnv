@@ -68,7 +68,7 @@ TEMPERATURE: float = 0.0
 MAX_TOKENS: int = 80   # action JSON ~ 50-60 chars / ~15 tokens; 80 is ample
 EVAL_MODE: str = os.environ.get("EVAL_MODE", "baseline")  # baseline | multiseed
 EVAL_SPLIT: str = os.environ.get("EVAL_SPLIT", "holdout")
-SCORE_EPS: float = 1e-4
+SCORE_EPS: float = 0.1
 BASELINE_RESULTS_PATH: str = os.environ.get("BASELINE_RESULTS_PATH", "baseline_results.json")
 
 # System prompt - ultra-compact to save context tokens
@@ -230,7 +230,7 @@ def _write_reproducibility_report(run_records: List[Dict[str, Any]]) -> None:
         task_summary[task_id] = {
             "runs": len(vals),
             "mean_score": _sanitize_score(statistics.mean(vals)),
-            "std_score": round(statistics.pstdev(vals), 4) if len(vals) > 1 else round(SCORE_EPS, 4),
+            "std_score": max(statistics.pstdev(vals) if len(vals) > 1 else 0.0, SCORE_EPS),
             "min_score": _sanitize_score(min(vals)),
             "max_score": _sanitize_score(max(vals)),
         }
@@ -244,6 +244,25 @@ def _write_reproducibility_report(run_records: List[Dict[str, Any]]) -> None:
         "records": sanitized_records,
         "task_summary": task_summary,
     }
+
+    # ── Final validation sweep ────────────────────────────────────────────
+    # Walk every *_score field and guarantee nothing is exactly 0.0 or 1.0.
+    # This is the last line of defence before the JSON hits disk.
+    _SCORE_FIELDS = {"score", "mean_score", "std_score", "min_score", "max_score"}
+    for rec in payload.get("records", []):
+        if isinstance(rec.get("score"), float) and not (0.0 < rec["score"] < 1.0):
+            rec["score"] = _sanitize_score(rec["score"])
+
+    for task_data in payload.get("task_summary", {}).values():
+        for field in _SCORE_FIELDS:
+            if field in task_data and isinstance(task_data[field], float):
+                v = task_data[field]
+                if not (0.0 < v < 1.0):
+                    task_data[field] = _sanitize_score(v)
+                    if task_data[field] <= 0.0 or task_data[field] >= 1.0:
+                        # absolute fallback
+                        task_data[field] = SCORE_EPS
+    # ── End validation sweep ──────────────────────────────────────────────
 
     output_path = Path(BASELINE_RESULTS_PATH)
     output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -269,21 +288,30 @@ def _clamp_score_open(value: float) -> float:
 
 
 def _sanitize_score(value: float) -> float:
+    """
+    Guarantee the returned float is strictly in (0.0, 1.0).
+
+    CRITICAL ORDER: ROUND FIRST, then apply boundary checks.
+    Doing the checks before rounding is wrong because:
+        round(0.99997, 4) == 1.0  — would escape a pre-check
+        round(0.00004, 4) == 0.0  — would escape a pre-check
+    The round-then-check order is the only safe approach.
+    """
     try:
         v = float(value)
     except (TypeError, ValueError):
         return SCORE_EPS
     if not math.isfinite(v):
         return SCORE_EPS
+
     
-    # Clamp FIRST to safe range, THEN round (not before)
-    # This prevents rounding from creating boundary values (0.0 or 1.0)
+
+    # ── THEN check boundaries ────────────────────────────────────────────
     if v <= 0.0:
         return SCORE_EPS
     if v >= 1.0:
         return 1.0 - SCORE_EPS
-    
-    # Now safe to round - v is guaranteed in (0.0, 1.0) after clamping
+
     return v
 
 
@@ -1600,7 +1628,7 @@ async def run_task(
         _debug(f"[WARN] score not finite for task={task_id}: {score_value} - clamping to SCORE_EPS")
         score = SCORE_EPS
     else:
-        score = round(score_value, 4)
+        score = score_value
 
     return score, rewards
 

@@ -22,7 +22,6 @@ from cascade_guard.tasks import TASK_CONFIGS, materialize_task_config, resolve_s
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-SCORE_EPS: float = 1e-4  # Epsilon for score boundaries: all scores in (SCORE_EPS, 1.0-SCORE_EPS)
 HARDEN_COST: float = 2.0
 COORDINATE_COST: float = 1.0
 FAILURE_THRESHOLD_UNHARDENED: float = 0.3
@@ -547,7 +546,7 @@ class CascadeEnvironment(Environment):
             "reward_clipped": raw_reward != clipped_reward,
         }
 
-        obs.reward = round(normalized_reward, 4)
+        obs.reward = normalized_reward
         obs.done = done
         obs.metadata = info
         return obs
@@ -649,7 +648,7 @@ class CascadeEnvironment(Environment):
         for ns in self._node_states.values():
             sector_totals.setdefault(ns.sector, []).append(ns.health)
         return {
-            s: max(SCORE_EPS, min(1.0 - SCORE_EPS, round(sum(vals) / len(vals), 4)))
+            s: (sum(vals) / len(vals))
             for s, vals in sector_totals.items()
         }
 
