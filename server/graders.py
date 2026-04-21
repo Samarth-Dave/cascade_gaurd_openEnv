@@ -427,12 +427,12 @@ def grade_cyberattack(
 # ---------------------------------------------------------------------------
 
 def grade_real_city(
-    failure_history: List[List[str]] = [],
-    hospital_health_log: List[float] = [],
-    cascade_depth_log: List[int] = [],
-    dependency_order_log: List[int] = [],
-    action_history: List[str] = [],
-    final_sector_summary: Dict[str, float] = {},
+    failure_history: List[List[str]] | None = None,
+    hospital_health_log: List[float] | None = None,
+    cascade_depth_log: List[int] | None = None,
+    dependency_order_log: List[int] | None = None,
+    action_history: List[str] | None = None,
+    final_sector_summary: Dict[str, float] | None = None,
     budget_spent: float = 0.0,
     budget_total: float = 15.0,
     total_nodes: int = 18,
@@ -448,6 +448,12 @@ def grade_real_city(
       15%  Radius coverage utilized  — action diversity (agent used non-wait actions)
       10%  Cascade containment  — low average cascade depth
     """
+    failure_history = failure_history or []
+    hospital_health_log = hospital_health_log or []
+    cascade_depth_log = cascade_depth_log or []
+    dependency_order_log = dependency_order_log or []
+    action_history = action_history or []
+    final_sector_summary = final_sector_summary or {}
     steps = max(len(failure_history), 1)
 
     # 1. Hospital survival
@@ -540,18 +546,17 @@ def grade(task_id: str, uncapped: bool = False, **kwargs) -> float:
     # cascade containment by replacing it with a lockdown-aware score injected
     # via high_centrality_nodes pathway — we store the adjusted cascade score
     # and pass it through the grader unchanged via the kwargs.
-    # Simpler: compute the lockdown-aware cascade score and pass as a hint.
     if lockdown_steps:
         failure_history = kwargs.get("failure_history", [])
         total_nodes = kwargs.get("total_nodes", 0)
         adjusted_cascade = _cascade_contained_score_lockdown(
             failure_history, total_nodes, lockdown_steps
         )
-        # Stash so graders can use it if they choose (they receive **kwargs)
         kwargs["_adjusted_cascade_score"] = adjusted_cascade
 
     try:
-        raw = GRADERS[task_id](**kwargs)
+        grader_func = GRADERS[task_id]
+        raw = grader_func(**kwargs)
     except Exception:
         # Any grader crash → neutral fallback, never 0.0 or 1.0.
         return _safe(0.5)

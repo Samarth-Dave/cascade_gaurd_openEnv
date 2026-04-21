@@ -374,11 +374,25 @@ def parse_action_from_response(response: str, obs: Optional["CascadeObservation"
     if action_type not in VALID_ACTIONS:
         return CascadeAction(action_type="wait", target_node_id=None)
 
+    parameters = {}
+    if target_parsed and "," in target_parsed:
+        parts = [p.strip() for p in target_parsed.split(",")]
+        if action_type == "reroute" and len(parts) >= 2:
+            parameters = {"source": parts[0], "target": parts[1]}
+            target_parsed = parts[0]
+        elif action_type == "cross_sector_bridge" and len(parts) >= 2:
+            parameters = {"sector_a": parts[0], "sector_b": parts[1]}
+            target_parsed = parts[0]
+        elif action_type == "redistribute_load" and len(parts) >= 2:
+            parameters = {"node_a": parts[0], "node_b": parts[1]}
+            target_parsed = parts[0]
+
     # Validate target node against observation
-    if target_parsed is not None and obs is not None:
+    # Multi-parameter actions define their own valid forms, so we whitelist them.
+    if target_parsed is not None and obs is not None and action_type not in ("cross_sector_bridge", "request_mutual_aid", "redistribute_load", "reroute"):
         valid_nodes = {n.node_id for n in obs.nodes}
         if target_parsed not in valid_nodes:
             hits = [nid for nid in valid_nodes if nid.upper() == target_parsed.upper()]
             target_parsed = hits[0] if hits else None
 
-    return CascadeAction(action_type=action_type, target_node_id=target_parsed)
+    return CascadeAction(action_type=action_type, target_node_id=target_parsed, parameters=parameters)
