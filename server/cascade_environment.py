@@ -133,6 +133,18 @@ class CascadeEnvironment(Environment):
         self._coverage_matrix: Dict[str, list] = {}  # geo coverage, populated on reset
         self._node_coords: Dict[str, tuple] = {}     # {node_id: (lat, lon, radius_km)}
         self._radius_protection_log: List[float] = []  # per-step mitigation fraction
+        # v2.2: expanded action space state
+        self._prioritize_cooldown: int = 0          # counts down from 3
+        self._mutual_aid_used: bool = False
+        self._lockdown_remaining: int = 0
+        self._active_bridges: Dict[tuple, int] = {}  # {(sector_a, sector_b): ttl}
+        self._fast_repair_nodes: Set[str] = set()
+        self._scada_patched: Set[str] = set()        # node_ids with SCADA cleared
+        self._reroute_targets: Dict[str, int] = {}   # {node_id: steps_remaining}
+        self._prioritize_immune: Set[str] = set()    # 1-step stress-immunity set
+        self._load_reduce_nodes: Dict[str, int] = {} # {node_id: steps_remaining} -0.15 fp mod
+        self._neighbor_stability: Dict[str, int] = {} # {node_id: steps_remaining} +0.15
+        self._sacrifice_nodes_log: List[str] = []    # controlled_cascade sacrifice IDs
 
     # ------------------------------------------------------------------
     # Public API
@@ -211,6 +223,18 @@ class CascadeEnvironment(Environment):
         self._narrative_phase = "pre_storm"
         self._unresolved_failure_steps = {}
         self._radius_protection_log = []
+        # v2.2: reset expanded action state
+        self._prioritize_cooldown = 0
+        self._mutual_aid_used = False
+        self._lockdown_remaining = 0
+        self._active_bridges = {}
+        self._fast_repair_nodes = set()
+        self._scada_patched = set()
+        self._reroute_targets = {}
+        self._prioritize_immune = set()
+        self._load_reduce_nodes = {}
+        self._neighbor_stability = {}
+        self._sacrifice_nodes_log = []
 
         rng_seed = int(resolved_seed)
         self._rng = random.Random(rng_seed)
@@ -266,6 +290,37 @@ class CascadeEnvironment(Environment):
             return obs
 
         self._expire_isolations()
+
+        # v2.2: lockdown guard — skip cascade and recovery this step when active
+        if self._lockdown_remaining > 0:
+            self._lockdown_remaining -= 1
+            # Still build observation and return; no cascade/recovery ticks fire.
+            obs = self._build_observation()
+            self._last_obs = obs
+            obs.reward = 0.0
+            obs.done = self._check_done()
+            self._step += 1
+            obs.metadata = {"reason": "lockdown_active", "lockdown_remaining": self._lockdown_remaining}
+            return obs
+
+        # v2.2: decrement prioritize cooldown at the top of each step
+        if self._prioritize_cooldown > 0:
+            self._prioritize_cooldown -= 1
+
+        # v2.2: decrement active bridge TTLs and remove expired ones
+        self._active_bridges = {k: v - 1 for k, v in self._active_bridges.items() if v > 1}
+
+        # v2.2: decrement reroute supply windows
+        self._reroute_targets = {k: v - 1 for k, v in self._reroute_targets.items() if v > 1}
+
+        # v2.2: decrement load-reduce modifiers
+        self._load_reduce_nodes = {k: v - 1 for k, v in self._load_reduce_nodes.items() if v > 1}
+
+        # v2.2: decrement neighbor stability boost windows
+        self._neighbor_stability = {k: v - 1 for k, v in self._neighbor_stability.items() if v > 1}
+
+        # v2.2: clear 1-step prioritize immunity set from previous step
+        self._prioritize_immune = set()
 
         reward: float = 0.0
         action_bonus: float = 0.0
@@ -427,6 +482,188 @@ class CascadeEnvironment(Environment):
             elif action_type == "wait":
                 pass
 
+            # ----------------------------------------------------------------
+            # v2.2: New action handlers
+            # ----------------------------------------------------------------
+            elif action_type == "reroute":
+                source = action.parameters.get("source") or action.target_node_id
+                target = action.parameters.get("target")
+                if source is None or source not in self._node_states:
+                    action_valid = False
+                    invalid_reason = "unknown_source"
+                elif target is None or target not in self._node_states:
+                    action_valid = False
+                    invalid_reason = "unknown_target"
+                elif not self._node_states[source].is_operational:
+                    action_valid = False
+                    invalid_reason = "source_not_operational"
+                elif self._budget < 0.6:
+                    action_valid = False
+                    invalid_reason = "insufficient_budget"
+                else:
+                    # BFS to confirm a path exists from source to target in operational graph
+                    if not self._bfs_operational_path(source, target):
+                        action_valid = False
+                        invalid_reason = "no_alternate_path"
+                    else:
+                        self._reroute_targets[target] = 2
+                        self._budget -= 0.6
+                        # Hospital reroute bonus
+                        if self._node_states[target].sector == "hospital":
+                            action_bonus += 0.05
+                            reward += 0.05
+
+            elif action_type == "prioritize":
+                target = action.target_node_id
+                if target is None or target not in self._node_states:
+                    action_valid = False
+                    invalid_reason = "unknown_target"
+                elif self._prioritize_cooldown > 0:
+                    action_valid = False
+                    invalid_reason = "cooldown_active"
+                else:
+                    ns = self._node_states[target]
+                    ns.health = min(1.0, ns.health + 0.15)
+                    self._prioritize_immune.add(target)
+                    self._prioritize_cooldown = 3
+
+            elif action_type == "deploy_repair_crew":
+                target = action.target_node_id
+                if target is None or target not in self._node_states:
+                    action_valid = False
+                    invalid_reason = "unknown_target"
+                elif target not in self._pending_recoveries:
+                    action_valid = False
+                    invalid_reason = "not_in_repair"
+                elif self._budget < 1.5 * 0.8:  # 1.5x standard recover cost lower bound
+                    action_valid = False
+                    invalid_reason = "insufficient_budget"
+                else:
+                    self._fast_repair_nodes.add(target)
+                    self._budget -= 1.5 * 0.8  # 1.5 × standard recover cost
+
+            elif action_type == "emergency_shutdown":
+                target = action.target_node_id
+                if target is None or target not in self._node_states:
+                    action_valid = False
+                    invalid_reason = "unknown_target"
+                elif self._node_states[target].health >= 0.30:
+                    action_valid = False
+                    invalid_reason = "health_above_threshold"
+                elif self._budget < 0.2:
+                    action_valid = False
+                    invalid_reason = "insufficient_budget"
+                else:
+                    ns = self._node_states[target]
+                    ns.is_operational = False
+                    ns.load = 0.0
+                    self._budget -= 0.2
+
+            elif action_type == "cross_sector_bridge":
+                sector_a = action.parameters.get("sector_a") or action.target_node_id
+                sector_b = action.parameters.get("sector_b")
+                if sector_a is None or sector_b is None:
+                    action_valid = False
+                    invalid_reason = "missing_sector_parameter"
+                elif sector_a == sector_b:
+                    action_valid = False
+                    invalid_reason = "same_sector"
+                elif self._budget < 1.5:
+                    action_valid = False
+                    invalid_reason = "insufficient_budget"
+                else:
+                    self._active_bridges[(sector_a, sector_b)] = 3
+                    self._budget -= 1.5
+
+            elif action_type == "patch_scada":
+                target = action.target_node_id
+                if target is None or target not in self._node_states:
+                    action_valid = False
+                    invalid_reason = "unknown_target"
+                elif not self._has_active_scada(target):
+                    action_valid = False
+                    invalid_reason = "no_active_scada"
+                elif self._budget < 0.8:
+                    action_valid = False
+                    invalid_reason = "insufficient_budget"
+                else:
+                    self._scada_patched.add(target)
+                    self._budget -= 0.8
+                    action_bonus += 0.05
+                    reward += 0.05
+
+            elif action_type == "redistribute_load":
+                node_a = action.parameters.get("node_a") or action.target_node_id
+                node_b = action.parameters.get("node_b")
+                if node_a is None or node_a not in self._node_states:
+                    action_valid = False
+                    invalid_reason = "unknown_node_a"
+                elif node_b is None or node_b not in self._node_states:
+                    action_valid = False
+                    invalid_reason = "unknown_node_b"
+                elif not self._node_states[node_a].is_operational or not self._node_states[node_b].is_operational:
+                    action_valid = False
+                    invalid_reason = "node_not_operational"
+                elif self._node_states[node_a].sector != self._node_states[node_b].sector:
+                    action_valid = False
+                    invalid_reason = "cross_sector_not_allowed"
+                elif self._budget < 0.5:
+                    action_valid = False
+                    invalid_reason = "insufficient_budget"
+                else:
+                    ns_a = self._node_states[node_a]
+                    ns_b = self._node_states[node_b]
+                    transfer = 0.2
+                    ns_a.load = max(0.0, min(1.0, ns_a.load - transfer))
+                    ns_b.load = max(0.0, min(1.0, ns_b.load + transfer))
+                    self._load_reduce_nodes[node_a] = 2
+                    self._budget -= 0.5
+
+            elif action_type == "request_mutual_aid":
+                sector = action.parameters.get("sector") or action.target_node_id
+                if sector is None:
+                    action_valid = False
+                    invalid_reason = "missing_sector_parameter"
+                elif self._mutual_aid_used:
+                    action_valid = False
+                    invalid_reason = "already_used_this_episode"
+                elif self._budget < 2.5:
+                    action_valid = False
+                    invalid_reason = "insufficient_budget"
+                else:
+                    for ns in self._node_states.values():
+                        if ns.sector == sector:
+                            ns.health = min(1.0, ns.health + 0.2)
+                    self._mutual_aid_used = True
+                    self._budget -= 2.5
+                    action_bonus += 0.05
+                    reward += 0.05
+
+            elif action_type == "controlled_cascade":
+                target = action.target_node_id
+                if target is None or target not in self._node_states:
+                    action_valid = False
+                    invalid_reason = "unknown_target"
+                else:
+                    ns = self._node_states[target]
+                    ns.health = max(0.0, ns.health - 0.5)
+                    self._sacrifice_nodes_log.append(target)
+                    # Give neighbors a stability boost
+                    neighbors = self._get_node_neighbors(target)
+                    for neighbor_id in neighbors:
+                        self._neighbor_stability[neighbor_id] = 2
+                        n_ns = self._node_states[neighbor_id]
+                        n_ns.health = min(1.0, n_ns.health + 0.15)
+
+            elif action_type == "multi_sector_lockdown":
+                if self._budget < 2.0:
+                    action_valid = False
+                    invalid_reason = "insufficient_budget"
+                else:
+                    self._lockdown_remaining = 2
+                    self._budget -= 2.0
+
+
         # ----------------------------------------------------------------
         # BUG 2 FIX: Capture baseline BEFORE any stress events fire.
         # Previously captured AFTER stress, giving wrong newly_failed detection.
@@ -453,16 +690,22 @@ class CascadeEnvironment(Environment):
 
         self._action_history.append(action_type)
 
-        # Apply recurring SCADA anomaly
+        # Apply recurring SCADA anomaly — skip nodes that have been patched
         if self._scada_start is not None and self._step >= self._scada_start:
             for step_n, event in self._stress_schedule.items():
                 if event.get("type") == "scada_anomaly" and event.get("recurring"):
                     t = event.get("target")
-                    if t and t in self._node_states:
+                    if t and t in self._node_states and t not in self._scada_patched:
                         ns = self._node_states[t]
                         if ns.health > 0.0:
                             ns.health = max(0.0, ns.health + event["effect"])
                     break
+
+        # v2.2: apply reroute health bonus to reroute targets
+        for node_id in self._reroute_targets:
+            if node_id in self._node_states:
+                self._node_states[node_id].health = min(1.0, self._node_states[node_id].health + 0.1)
+
 
         # ----------------------------------------------------------------
         # BUG 3 FIX: Update operational status BEFORE cascade propagation.
@@ -495,9 +738,16 @@ class CascadeEnvironment(Environment):
         # ----------------------------------------------------------------
         finished = []
         for node_id in list(self._pending_recoveries.keys()):
+            # v2.2: fast-repair crew halves remaining steps (round up), applied once
+            if node_id in self._fast_repair_nodes:
+                current = self._pending_recoveries[node_id]
+                import math as _math
+                self._pending_recoveries[node_id] = _math.ceil(current / 2)
+                self._fast_repair_nodes.discard(node_id)
             self._pending_recoveries[node_id] -= 1
             if self._pending_recoveries[node_id] <= 0:
                 finished.append(node_id)
+
 
         for node_id in finished:
             del self._pending_recoveries[node_id]
@@ -716,6 +966,7 @@ class CascadeEnvironment(Environment):
         """Return all currently valid actions as structured dictionaries."""
         legal: List[dict] = []
 
+        # Tier 1 — Basic
         if self._budget >= HARDEN_COST:
             for nid, ns in self._node_states.items():
                 if ns.is_operational and not ns.is_hardened:
@@ -729,6 +980,9 @@ class CascadeEnvironment(Environment):
             ):
                 legal.append({"action_type": "recover", "target_node_id": nid})
 
+        legal.append({"action_type": "wait", "target_node_id": None})
+
+        # Tier 2 — Intermediate
         for nid, ns in self._node_states.items():
             if ns.is_operational and ns.load > 0.5:
                 if not (ns.is_critical and (ns.load - 0.2) < 0.2):
@@ -753,7 +1007,84 @@ class CascadeEnvironment(Environment):
             if not ns.is_operational and nid not in self._isolated_nodes:
                 legal.append({"action_type": "isolate", "target_node_id": nid})
 
-        legal.append({"action_type": "wait", "target_node_id": None})
+        # reroute: source must be operational and a BFS path must exist
+        if self._budget >= 0.6:
+            op_nodes = [nid for nid, ns in self._node_states.items() if ns.is_operational]
+            for src in op_nodes:
+                for tgt, tns in self._node_states.items():
+                    if tgt != src and self._bfs_operational_path(src, tgt):
+                        legal.append({
+                            "action_type": "reroute",
+                            "target_node_id": src,
+                            "parameters": {"source": src, "target": tgt},
+                        })
+
+        # prioritize: cooldown must be 0
+        if self._prioritize_cooldown == 0:
+            for nid in self._node_states:
+                legal.append({"action_type": "prioritize", "target_node_id": nid})
+
+        # deploy_repair_crew: node must be in active recovery
+        if self._budget >= 1.5 * 0.8:
+            for nid in self._pending_recoveries:
+                legal.append({"action_type": "deploy_repair_crew", "target_node_id": nid})
+
+        # Tier 3 — Hard
+        # emergency_shutdown: health < 0.30
+        if self._budget >= 0.2:
+            for nid, ns in self._node_states.items():
+                if ns.health < 0.30:
+                    legal.append({"action_type": "emergency_shutdown", "target_node_id": nid})
+
+        # cross_sector_bridge: any two different sectors
+        if self._budget >= 1.5:
+            sectors = list({ns.sector for ns in self._node_states.values()})
+            for i, sa in enumerate(sectors):
+                for sb in sectors[i + 1:]:
+                    legal.append({
+                        "action_type": "cross_sector_bridge",
+                        "target_node_id": sa,
+                        "parameters": {"sector_a": sa, "sector_b": sb},
+                    })
+
+        # patch_scada: node must have active unpatched SCADA anomaly
+        if self._budget >= 0.8:
+            for nid in self._node_states:
+                if self._has_active_scada(nid):
+                    legal.append({"action_type": "patch_scada", "target_node_id": nid})
+
+        # redistribute_load: both nodes operational, same sector
+        if self._budget >= 0.5:
+            op_nodes_list = [
+                (nid, ns) for nid, ns in self._node_states.items() if ns.is_operational
+            ]
+            for i, (nid_a, ns_a) in enumerate(op_nodes_list):
+                for nid_b, ns_b in op_nodes_list[i + 1:]:
+                    if ns_a.sector == ns_b.sector:
+                        legal.append({
+                            "action_type": "redistribute_load",
+                            "target_node_id": nid_a,
+                            "parameters": {"node_a": nid_a, "node_b": nid_b},
+                        })
+
+        # request_mutual_aid: once per episode, per sector
+        if not self._mutual_aid_used and self._budget >= 2.5:
+            for sector in {ns.sector for ns in self._node_states.values()}:
+                legal.append({
+                    "action_type": "request_mutual_aid",
+                    "target_node_id": sector,
+                    "parameters": {"sector": sector},
+                })
+
+        # Tier 4 — Expert
+        # controlled_cascade: any node (agent chooses sacrifice)
+        for nid in self._node_states:
+            legal.append({"action_type": "controlled_cascade", "target_node_id": nid})
+
+        # multi_sector_lockdown
+        if self._budget >= 2.0:
+            legal.append({"action_type": "multi_sector_lockdown", "target_node_id": None})
+
         return legal
 
     def get_state_features(self) -> List[float]:
@@ -776,6 +1107,51 @@ class CascadeEnvironment(Environment):
             min((ns.health for ns in hosp), default=1.0),
             weather_feature,
         ]
+
+    def _bfs_operational_path(self, source: str, target: str) -> bool:
+        """BFS over the operational graph to check if a path exists from source to target."""
+        if source == target:
+            return True
+        # Build adjacency list from both directions of the edge graph
+        adjacency: Dict[str, List[str]] = {nid: [] for nid in self._node_states}
+        for key in self._edge_states:
+            src, tgt = key.split("->")
+            if src in adjacency and tgt in adjacency:
+                adjacency[src].append(tgt)
+                adjacency[tgt].append(src)  # undirected for reroute purposes
+        visited: Set[str] = {source}
+        queue: List[str] = [source]
+        while queue:
+            current = queue.pop(0)
+            for neighbor in adjacency.get(current, []):
+                if neighbor == target:
+                    return True
+                if neighbor not in visited and self._node_states.get(neighbor) and self._node_states[neighbor].is_operational:
+                    visited.add(neighbor)
+                    queue.append(neighbor)
+        return False
+
+    def _has_active_scada(self, node_id: str) -> bool:
+        """Return True if node_id has an active, unpatched SCADA anomaly drain."""
+        if node_id in self._scada_patched:
+            return False
+        if self._scada_start is None or self._step < self._scada_start:
+            return False
+        for step_n, event in self._stress_schedule.items():
+            if event.get("type") == "scada_anomaly" and event.get("recurring"):
+                return event.get("target") == node_id
+        return False
+
+    def _get_node_neighbors(self, node_id: str) -> List[str]:
+        """Return all adjacent node IDs (both incoming and outgoing edges)."""
+        neighbors: List[str] = []
+        for key in self._edge_states:
+            src, tgt = key.split("->")
+            if src == node_id and tgt in self._node_states:
+                neighbors.append(tgt)
+            elif tgt == node_id and src in self._node_states:
+                neighbors.append(src)
+        return neighbors
 
     def _expire_isolations(self) -> None:
         expired = [

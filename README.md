@@ -80,29 +80,131 @@ All grader outputs are deterministic and bounded strictly inside (0, 1) for each
 
 ## 2. Action Space
 
-Example actions:
+The agent has 15 actions organized across four difficulty tiers. This expanded action
+space gives GRPO sufficient decision-surface to learn meaningful strategy differentiation
+across tasks with 4 sectors, up to 18 nodes, and up to 35 steps per episode.
 
-Actions:
-- harden(node)
-- recover(node)
-- isolate(node)
-- shed_load(node)
-- coordinate(node)
-- wait()
+### Tier 1 — Basic
 
-Detailed semantics:
-- harden(node): consumes budget and lowers the node failure threshold, making it
-  harder to knock out during stress windows.
-- recover(node): starts a multi-step restoration process, but only when upstream
-  dependencies are operational.
-- isolate(node): temporarily severs outgoing cascade effects from a failed node
-  for 3 steps. It does not restore health, but it can stop recovery deadlocks from
-  becoming downstream damage.
-- shed_load(node): reduces overload pressure; unsafe use on critical/hospital nodes
-  is strongly penalized.
-- coordinate(node): temporary observability aid that reduces delay pressure for
-  target sector decision-making.
-- wait(): valid no-op, but penalized under actionable or high-pressure conditions.
+**wait()**
+The no-op. Valid but penalized under actionable conditions (active failure, pressure
+above threshold). Use only during genuine repair cooldowns when no other valid action
+exists. Cost: 0 budget.
+
+**harden(node)**
+Spends budget to lower a node's failure threshold, making it harder to knock out during
+stress windows. Effect persists for the episode. Use proactively when `upcoming_stress_level`
+is `soon` or `imminent`. Cost: 0.8–1.2 budget units.
+
+**recover(node)**
+Starts a multi-step restoration on a failed node. Only valid when all upstream
+dependencies are operational. Invalid uses are penalized. Takes 2–4 steps depending on
+node type. Cost: 0.6–1.0 budget units.
+
+### Tier 2 — Intermediate
+
+**isolate(node)**
+Severs all outgoing cascade edges from a node to prevent it from propagating its failure
+state downstream. The node itself stays degraded, but the cascade stops at that boundary.
+Effect lasts 3 steps. Use when a failed node's downstream neighbors are healthy and
+worth protecting. Cost: 0.3 budget.
+
+**reroute(source, target)**
+Redirects power or water flow from a healthy alternative node to a target that has lost
+its upstream supply. Only valid when a viable alternate supply path exists in the graph.
+Allows hospitals or water treatment to remain operational while a generator is being
+repaired. Cost: 0.6 budget.
+
+**prioritize(node)**
+Marks a node as highest-priority for the current step, granting it a +0.15 stability
+bonus and making it immune to stress escalation for 1 step. No direct budget cost, but
+limited to once per 3 steps (cooldown enforced). Use to protect critical nodes during
+peak stress windows. Cost: 0 (cooldown gated).
+
+**deploy_repair_crew(node)**
+Accelerated recovery — reduces repair time to 1–2 steps at 1.5× the standard recover
+budget cost. Use when a hospital or critical node is at critically low health and cannot
+survive the normal repair window. Cost: 1.5× recover cost.
+
+**coordinate(node)**
+Reduces observation delay on delayed-sector nodes for 2 steps, improving the agent's
+observability confidence score for that sector. Especially important in task_medium and
+task_cyberattack where delayed sectors obscure real node state. Cost: 0.4 budget.
+
+**shed_load(node)**
+Reduces overload pressure on a node. Unsafe use on critical or hospital nodes is
+strongly penalized. Use only on non-critical nodes that are at risk of failure due to
+sustained high load rather than external stress events. Cost: 0.3 budget.
+
+### Tier 3 — Hard
+
+**emergency_shutdown(node)**
+Performs a controlled shutdown of a node whose health is below 30%, preventing it from
+triggering a chaotic cascade. Unlike isolate, this also halts load on the node, which
+can relieve pressure on its upstream suppliers. The agent controls the timing rather
+than letting the environment trigger an uncontrolled failure. Cost: 0.2 budget.
+
+**cross_sector_bridge(sector_a, sector_b)**
+Establishes a temporary cross-sector redundancy link between two sectors for 3 steps,
+allowing one sector's operational nodes to partially compensate for a gap in the other.
+For example, bridging telecom to hospital can restore partial observability during a
+hospital-sector crisis. Cost: 1.5 budget.
+
+**patch_scada(node)**
+Specifically counters an active `scada_anomaly` stress event. Stops the recurring health
+drain on the targeted node and restores observation fidelity. Only valid on nodes
+currently under SCADA anomaly. Critical in task_cyberattack where the drain compounds
+every step from the start. Cost: 0.8 budget.
+
+**redistribute_load(node_a, node_b)**
+Moves excess load from an overloaded node (node_a) to an underloaded node (node_b)
+within the same sector. Both nodes must be operational. Lowers node_a's failure
+probability for 2 steps. Requires the agent to reason about relative load levels, not
+just binary healthy/failed states. Cost: 0.5 budget.
+
+**request_mutual_aid(sector)**
+Invokes an external resource injection, adding a one-time +0.2 health boost to all
+nodes in the target sector. Represents calling in outside mutual aid. Can only be used
+once per episode — this is the emergency reserve. Use only when a sector is in
+unrecoverable freefall and individual node actions cannot stop it. Cost: 2.5 budget.
+
+### Tier 4 — Expert
+
+**controlled_cascade(node)**
+Deliberately triggers a controlled partial failure on a low-importance node to release
+pressure across the graph. The sacrifice node takes an immediate -0.5 health hit, while
+each neighboring node gains +0.15 stability for 2 steps. No direct budget cost, but the
+grader penalizes the sacrificed node's health loss. Requires full graph centrality
+awareness to identify which node is genuinely least critical. Cost: 0 budget (grader
+penalty applies).
+
+**multi_sector_lockdown()**
+Freezes the entire system in a defensive state for 2 steps: no cascade can propagate,
+all health values stabilize, but no recovery is possible during the lockdown window.
+After 2 steps the system unfreezes and normal dynamics resume. Use only when
+simultaneous multi-sector failure is spiraling faster than individual actions can
+address. Cost: 2.0 budget.
+
+### Action Summary Table
+
+| # | Action | Tier | Budget Cost | Primary Use |
+|---|--------|------|-------------|-------------|
+| 1 | wait() | Basic | 0 | No-op during cooldowns |
+| 2 | harden(node) | Basic | 0.8–1.2 | Proactive resilience before stress |
+| 3 | recover(node) | Basic | 0.6–1.0 | Restore a failed node |
+| 4 | isolate(node) | Intermediate | 0.3 | Stop cascade propagation |
+| 5 | reroute(src, tgt) | Intermediate | 0.6 | Alternate supply path |
+| 6 | prioritize(node) | Intermediate | 0 (cooldown) | Protect critical node this step |
+| 7 | deploy_repair_crew(node) | Intermediate | 1.5× recover | Fast repair when time-critical |
+| 8 | coordinate(node) | Intermediate | 0.4 | Fix observation delay |
+| 9 | shed_load(node) | Intermediate | 0.3 | Relieve overload pressure |
+| 10 | emergency_shutdown(node) | Hard | 0.2 | Controlled pre-failure shutdown |
+| 11 | cross_sector_bridge(s_a, s_b) | Hard | 1.5 | Cross-sector redundancy link |
+| 12 | patch_scada(node) | Hard | 0.8 | Counter active SCADA drain |
+| 13 | redistribute_load(n_a, n_b) | Hard | 0.5 | Balance overloaded nodes |
+| 14 | request_mutual_aid(sector) | Hard | 2.5 (once/ep) | Emergency sector-wide boost |
+| 15 | controlled_cascade(node) | Expert | 0 + grader penalty | Sacrifice one node to save many |
+| 16 | multi_sector_lockdown() | Expert | 2.0 | Freeze system during multi-sector spiral |
 
 ## 3. Observation Space
 

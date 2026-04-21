@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
@@ -72,6 +72,58 @@ class CascadeObservation(Observation):
     upcoming_stress_level: str = "none"  # none | soon | imminent
 
 
+class RerouteAction(BaseModel):
+    action: Literal["reroute"]
+    source: str          # node_id of healthy alternate supply node
+    target: str          # node_id that lost its upstream
+
+
+class PrioritizeAction(BaseModel):
+    action: Literal["prioritize"]
+    node: str
+
+
+class DeployRepairCrewAction(BaseModel):
+    action: Literal["deploy_repair_crew"]
+    node: str
+
+
+class EmergencyShutdownAction(BaseModel):
+    action: Literal["emergency_shutdown"]
+    node: str
+
+
+class CrossSectorBridgeAction(BaseModel):
+    action: Literal["cross_sector_bridge"]
+    sector_a: str
+    sector_b: str
+
+
+class PatchScadaAction(BaseModel):
+    action: Literal["patch_scada"]
+    node: str
+
+
+class RedistributeLoadAction(BaseModel):
+    action: Literal["redistribute_load"]
+    node_a: str          # overloaded node
+    node_b: str          # underloaded node (same sector)
+
+
+class RequestMutualAidAction(BaseModel):
+    action: Literal["request_mutual_aid"]
+    sector: str
+
+
+class ControlledCascadeAction(BaseModel):
+    action: Literal["controlled_cascade"]
+    node: str            # sacrifice node
+
+
+class MultiSectorLockdownAction(BaseModel):
+    action: Literal["multi_sector_lockdown"]
+
+
 class CascadeAction(Action):
     """OpenEnv Action for the CascadeGuard environment.
 
@@ -85,13 +137,21 @@ class CascadeAction(Action):
     )
 
     action_type: str  # harden | shed_load | coordinate | recover | isolate | wait
+                      # reroute | prioritize | deploy_repair_crew | emergency_shutdown
+                      # cross_sector_bridge | patch_scada | redistribute_load
+                      # request_mutual_aid | controlled_cascade | multi_sector_lockdown
     target_node_id: Optional[str] = None
     parameters: Dict[str, Any] = {}
 
     @field_validator("action_type")
     @classmethod
     def validate_action_type(cls, v: str) -> str:
-        allowed = {"harden", "shed_load", "coordinate", "recover", "isolate", "wait"}
+        allowed = {
+            "harden", "shed_load", "coordinate", "recover", "isolate", "wait",
+            "reroute", "prioritize", "deploy_repair_crew", "emergency_shutdown",
+            "cross_sector_bridge", "patch_scada", "redistribute_load",
+            "request_mutual_aid", "controlled_cascade", "multi_sector_lockdown",
+        }
         if v not in allowed:
             raise ValueError(
                 f"action_type must be one of {allowed}, got {v!r}"

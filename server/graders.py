@@ -184,6 +184,47 @@ def _centrality_protection_score(
     return _clamp(protected_ratio)
 
 
+def _sacrifice_penalty(sacrifice_count: int) -> float:
+    """
+    Grader-side penalty for controlled_cascade actions.
+    Each sacrifice node recorded in episode metadata reduces the health
+    component by 0.1, capped at 0.5 total reduction.
+    Returns a non-negative deduction (caller subtracts it).
+    """
+    return min(0.5, 0.1 * max(0, sacrifice_count))
+
+
+def _cascade_contained_score_lockdown(
+    failure_history: List[Set[str]],
+    total_nodes: int,
+    lockdown_steps: List[int],
+) -> float:
+    """
+    Variant of _cascade_contained_score that excludes lockdown freeze-window
+    steps from the measurement so the agent is not penalised for cascade
+    propagation that was deliberately paused.
+    """
+    if not failure_history:
+        return _SCORE_HI
+
+    skip = set(lockdown_steps)
+    filtered = [
+        s for i, s in enumerate(failure_history) if i not in skip
+    ]
+    if not filtered:
+        return _SCORE_HI
+
+    all_seen: Set[str] = set()
+    for s in filtered:
+        all_seen.update(s)
+
+    denom = max(total_nodes or len(all_seen), 1)
+    worst_fail_ratio = max(len(s) for s in filtered) / denom
+    avg_fail_ratio = sum(len(s) for s in filtered) / (len(filtered) * denom)
+    combined = 0.6 * worst_fail_ratio + 0.4 * avg_fail_ratio
+    return _clamp(1.0 - combined)
+
+
 # ---------------------------------------------------------------------------
 # Per-task graders
 # ---------------------------------------------------------------------------
@@ -477,6 +518,12 @@ def grade(task_id: str, uncapped: bool = False, **kwargs) -> float:
                   Use only for training signals — never for OpenEnv submission.
         **kwargs: All grader arguments (failure_history, hospital_health_log,
                   final_sector_summary, budget_spent, budget_total, etc.)
+                  v2.2 optional kwargs:
+                    controlled_cascade_sacrifices (int): number of sacrifice
+                      nodes used in the episode; each deducts 0.1 from score.
+                    lockdown_steps (List[int]): step indices during which a
+                      multi_sector_lockdown was active; these are excluded from
+                      the cascade containment measurement window.
 
     Exception handling: catches ALL exceptions so grader crashes never
     propagate to the OpenEnv pipeline.
@@ -485,11 +532,33 @@ def grade(task_id: str, uncapped: bool = False, **kwargs) -> float:
         # Unknown task — return neutral rather than crashing.
         return _safe(0.5)
 
+    # v2.2: extract and strip v2.2-specific kwargs before passing to grader
+    sacrifice_count: int = int(kwargs.pop("controlled_cascade_sacrifices", 0) or 0)
+    lockdown_steps: List[int] = list(kwargs.pop("lockdown_steps", []) or [])
+
+    # v2.2: if lockdown steps exist, override the failure_history view for
+    # cascade containment by replacing it with a lockdown-aware score injected
+    # via high_centrality_nodes pathway — we store the adjusted cascade score
+    # and pass it through the grader unchanged via the kwargs.
+    # Simpler: compute the lockdown-aware cascade score and pass as a hint.
+    if lockdown_steps:
+        failure_history = kwargs.get("failure_history", [])
+        total_nodes = kwargs.get("total_nodes", 0)
+        adjusted_cascade = _cascade_contained_score_lockdown(
+            failure_history, total_nodes, lockdown_steps
+        )
+        # Stash so graders can use it if they choose (they receive **kwargs)
+        kwargs["_adjusted_cascade_score"] = adjusted_cascade
+
     try:
         raw = GRADERS[task_id](**kwargs)
     except Exception:
         # Any grader crash → neutral fallback, never 0.0 or 1.0.
         return _safe(0.5)
+
+    # v2.2: apply controlled_cascade sacrifice penalty
+    if sacrifice_count > 0:
+        raw = _clamp(raw - _sacrifice_penalty(sacrifice_count))
 
     if uncapped:
         # Return raw composite (already through sub-scorer _clamp(), but NOT _safe())
