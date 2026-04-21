@@ -239,6 +239,7 @@ def grade_easy(
     cascade_depth_log: List[int] | None = None,
     dependency_order_log: List[int] | None = None,
     action_history: List[str] | None = None,
+    **kwargs,
 ) -> float:
     """
     task_easy grader.
@@ -254,7 +255,7 @@ def grade_easy(
     no_blackout = _clamp(
         1.0 if all(v > 0.0 for v in final_sector_summary.values()) else 0.0
     )
-    cascade = _cascade_contained_score(failure_history, total_nodes)
+    cascade = kwargs.get("_adjusted_cascade_score") or _cascade_contained_score(failure_history, total_nodes)
     depth   = _cascade_depth_score(cascade_depth_log or [], total_nodes)
 
     raw = 0.28 * avg + 0.10 * hosp + 0.28 * no_blackout + 0.20 * cascade + 0.14 * depth
@@ -271,6 +272,7 @@ def grade_medium(
     cascade_depth_log: List[int] | None = None,
     dependency_order_log: List[int] | None = None,
     action_history: List[str] | None = None,
+    **kwargs,
 ) -> float:
     """
     task_medium grader.
@@ -282,7 +284,7 @@ def grade_medium(
     avg       = _clamp(sum(final_sector_summary.values()) / len(final_sector_summary))
     hosp      = _hospital_maintained_score(hospital_health_log)
     no_blackout = _clamp(1.0 if all(v > 0.0 for v in final_sector_summary.values()) else 0.0)
-    cascade   = _cascade_contained_score(failure_history, total_nodes)
+    cascade   = kwargs.get("_adjusted_cascade_score") or _cascade_contained_score(failure_history, total_nodes)
     depth     = _cascade_depth_score(cascade_depth_log or [], total_nodes)
     dep_order = _dependency_order_score(dependency_order_log or [])
 
@@ -306,6 +308,7 @@ def grade_hard(
     dependency_order_log: List[int] | None = None,
     action_history: List[str] | None = None,
     high_centrality_nodes: List[str] | None = None,   # P2: centrality-aware bonus
+    **kwargs,
 ) -> float:
     """
     task_hard grader.
@@ -319,7 +322,7 @@ def grade_hard(
     avg               = _clamp(sum(final_sector_summary.values()) / len(final_sector_summary))
     hosp              = _hospital_maintained_score(hospital_health_log)
     no_blackout       = _clamp(1.0 if all(v > 0.0 for v in final_sector_summary.values()) else 0.0)
-    cascade           = _cascade_contained_score(failure_history, total_nodes)
+    cascade           = kwargs.get("_adjusted_cascade_score") or _cascade_contained_score(failure_history, total_nodes)
     budget_efficiency = _budget_conservation_score(budget_spent, budget_total)
     depth             = _cascade_depth_score(cascade_depth_log or [], total_nodes)
     dep_order         = _dependency_order_score(dependency_order_log or [])
@@ -351,6 +354,7 @@ def grade_gen_blackout(
     cascade_depth_log: List[int] | None = None,
     dependency_order_log: List[int] | None = None,
     action_history: List[str] | None = None,
+    **kwargs,
 ) -> float:
     """
     task_gen_blackout grader.
@@ -363,7 +367,7 @@ def grade_gen_blackout(
     avg         = _clamp(sum(final_sector_summary.values()) / len(final_sector_summary))
     hosp        = _hospital_maintained_score(hospital_health_log)
     no_blackout = _clamp(1.0 if all(v > 0.0 for v in final_sector_summary.values()) else 0.0)
-    cascade     = _cascade_contained_score(failure_history, total_nodes)
+    cascade     = kwargs.get("_adjusted_cascade_score") or _cascade_contained_score(failure_history, total_nodes)
     depth       = _cascade_depth_score(cascade_depth_log or [], total_nodes)
     dep_order   = _dependency_order_score(dependency_order_log or [])
 
@@ -387,6 +391,7 @@ def grade_cyberattack(
     dependency_order_log: List[int] | None = None,
     action_history: List[str] | None = None,
     high_centrality_nodes: List[str] | None = None,   # P2: centrality-aware bonus
+    **kwargs,
 ) -> float:
     """
     task_cyberattack grader.
@@ -400,7 +405,7 @@ def grade_cyberattack(
     avg               = _clamp(sum(final_sector_summary.values()) / len(final_sector_summary))
     hosp              = _hospital_maintained_score(hospital_health_log)
     no_blackout       = _clamp(1.0 if all(v > 0.0 for v in final_sector_summary.values()) else 0.0)
-    cascade           = _cascade_contained_score(failure_history, total_nodes)
+    cascade           = kwargs.get("_adjusted_cascade_score") or _cascade_contained_score(failure_history, total_nodes)
     budget_efficiency = _budget_conservation_score(budget_spent, budget_total)
     depth             = _cascade_depth_score(cascade_depth_log or [], total_nodes)
     dep_order         = _dependency_order_score(dependency_order_log or [])
