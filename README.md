@@ -85,6 +85,7 @@ Example actions:
 Actions:
 - harden(node)
 - recover(node)
+- isolate(node)
 - shed_load(node)
 - coordinate(node)
 - wait()
@@ -94,6 +95,9 @@ Detailed semantics:
   harder to knock out during stress windows.
 - recover(node): starts a multi-step restoration process, but only when upstream
   dependencies are operational.
+- isolate(node): temporarily severs outgoing cascade effects from a failed node
+  for 3 steps. It does not restore health, but it can stop recovery deadlocks from
+  becoming downstream damage.
 - shed_load(node): reduces overload pressure; unsafe use on critical/hospital nodes
   is strongly penalized.
 - coordinate(node): temporary observability aid that reduces delay pressure for
@@ -117,6 +121,8 @@ In practice, each observation also includes important context for planning:
 - sector-level health summary
 - diagnostics block (critical failures, at-risk nodes, dependency alerts,
   recommended recovery order, and system pressure)
+- upcoming stress level (`none`, `soon`, or `imminent`) so agents can time
+  proactive hardening before scheduled stress events
 
 This makes the environment useful for both raw policy learning and
 analysis-friendly decision support experiments.
@@ -144,6 +150,11 @@ Reward design intent:
 Runtime reward contract:
 - Exposed step reward is normalized and clamped strictly to (0.0, 1.0) for evaluator compatibility.
 - Raw shaped reward is still available in observation metadata as `raw_reward`.
+- `reward_mode="uncapped"` exposes raw shaped reward directly.
+- `reward_mode="grpo"` exposes signed, scaled reward for GRPO and enables small
+  reward noise plus grader-aligned shaping.
+- `training_mode=True` disables early success/failure exits so training batches
+  compare fixed-length episodes.
 
 ## 5. Setup Instructions
 
@@ -180,6 +191,12 @@ Alternative launch command:
 python -m cascade_guard.server.app
 ```
 
+Explicit uvicorn command:
+
+```bash
+python -m uvicorn cascade_guard.server.app:app --host 127.0.0.1 --port 8000
+```
+
 Health check:
 
 ```bash
@@ -190,6 +207,20 @@ Run baseline inference:
 
 ```bash
 python inference.py
+```
+
+Run local GRPO training before pushing the environment:
+
+```bash
+# From the repo root, open and run:
+jupyter notebook cascade_guard/training/CascadeGuard_GRPO_Colab.ipynb
+```
+
+The notebook trains against the local checkout directly. It does not require the
+server or the deployed Hugging Face Space. The training reset path is:
+
+```python
+env.reset(task_id=task_id, seed=seed, reward_mode="grpo", training_mode=True)
 ```
 
 ## 7. Baseline Inference and Reproducibility

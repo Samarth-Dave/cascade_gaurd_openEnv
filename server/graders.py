@@ -107,7 +107,9 @@ def _cascade_contained_score(failure_history: List[Set[str]], total_nodes: int) 
 
     denom = max(total_nodes or len(all_seen), 1)
     worst_fail_ratio = max(len(s) for s in failure_history) / denom
-    return _clamp(1.0 - worst_fail_ratio)
+    avg_fail_ratio = sum(len(s) for s in failure_history) / (len(failure_history) * denom)
+    combined = 0.6 * worst_fail_ratio + 0.4 * avg_fail_ratio
+    return _clamp(1.0 - combined)
 
 
 def _dependency_order_score(dependency_order_log: List[int]) -> float:
@@ -134,9 +136,7 @@ def _cascade_depth_score(cascade_depth_log: List[int], total_nodes: int) -> floa
     return _clamp(1.0 - depth_ratio)
 
 
-def _intervention_efficiency_score(action_history: List[str],
-                                   budget_spent: float,
-                                   budget_total: float) -> float:
+def _proactive_rate_score(action_history: List[str]) -> float:
     """
     Blend of proactive-action rate and budget efficiency.
     Empty history → neutral 0.5.
@@ -147,10 +147,41 @@ def _intervention_efficiency_score(action_history: List[str],
     active_actions = sum(1 for a in action_history if a != "wait")
     proactive_rate = active_actions / max(len(action_history), 1)   # in [0, 1]
 
-    budget_eff = _clamp(1.0 - (budget_spent / max(float(budget_total), 1e-9)))
+    return _clamp(proactive_rate)
 
-    # proactive_rate is already in [0,1]; budget_eff in [SCORE_EPS, 1-SCORE_EPS]
-    return _clamp(0.6 * proactive_rate + 0.4 * budget_eff)
+
+def _budget_conservation_score(budget_spent: float, budget_total: float) -> float:
+    """Allow prudent spending; penalize only heavy spending above 70%."""
+    if budget_total <= 0:
+        return _safe(0.5)
+    spend_ratio = budget_spent / budget_total
+    if spend_ratio <= 0.70:
+        return _SCORE_HI
+    return _clamp(1.0 - (spend_ratio - 0.70) * 2.0)
+
+
+def _centrality_protection_score(
+    action_history: List[str],
+    high_centrality_nodes: List[str],
+    failure_history: List[Set[str]],
+) -> float:
+    """
+    Rewards the agent for protecting high-centrality (backbone) nodes.
+    Penalises if any high-centrality node appeared in the failure history.
+
+    high_centrality_nodes: list of node IDs with degree >= 3 (from env).
+    Returns _safe(0.5) when data is unavailable (neutral, never penalises).
+    """
+    if not high_centrality_nodes or not failure_history:
+        return _safe(0.5)
+
+    all_failed: Set[str] = set()
+    for s in failure_history:
+        all_failed.update(s)
+
+    central_failed = sum(1 for n in high_centrality_nodes if n in all_failed)
+    protected_ratio = 1.0 - (central_failed / max(len(high_centrality_nodes), 1))
+    return _clamp(protected_ratio)
 
 
 # ---------------------------------------------------------------------------
@@ -178,13 +209,14 @@ def grade_easy(
     avg = _clamp(
         sum(final_sector_summary.values()) / len(final_sector_summary)
     )
+    hosp = _hospital_maintained_score(hospital_health_log)
     no_blackout = _clamp(
         1.0 if all(v > 0.0 for v in final_sector_summary.values()) else 0.0
     )
     cascade = _cascade_contained_score(failure_history, total_nodes)
     depth   = _cascade_depth_score(cascade_depth_log or [], total_nodes)
 
-    raw = 0.35 * avg + 0.35 * no_blackout + 0.20 * cascade + 0.10 * depth
+    raw = 0.28 * avg + 0.10 * hosp + 0.28 * no_blackout + 0.20 * cascade + 0.14 * depth
     return _safe(raw)
 
 
@@ -232,32 +264,39 @@ def grade_hard(
     cascade_depth_log: List[int] | None = None,
     dependency_order_log: List[int] | None = None,
     action_history: List[str] | None = None,
+    high_centrality_nodes: List[str] | None = None,   # P2: centrality-aware bonus
 ) -> float:
     """
     task_hard grader.
     Weights: avg=0.20, hosp=0.25, no_blackout=0.15, cascade=0.10,
-             budget_eff=0.10, depth=0.10, dep_order=0.05, intervention=0.05   (sum=1.00)
+             budget_eff=0.08, depth=0.08, dep_order=0.05, proactive=0.04,
+             centrality=0.05   (sum=1.00)
     """
     if not final_sector_summary:
         return _safe(0.5)
 
-    avg              = _clamp(sum(final_sector_summary.values()) / len(final_sector_summary))
-    hosp             = _hospital_maintained_score(hospital_health_log)
-    no_blackout      = _clamp(1.0 if all(v > 0.0 for v in final_sector_summary.values()) else 0.0)
-    cascade          = _cascade_contained_score(failure_history, total_nodes)
-    budget_efficiency = _clamp(1.0 - (budget_spent / max(float(budget_total), 1e-9)))
-    depth            = _cascade_depth_score(cascade_depth_log or [], total_nodes)
-    dep_order        = _dependency_order_score(dependency_order_log or [])
-    intervention     = _intervention_efficiency_score(action_history or [], budget_spent, budget_total)
+    avg               = _clamp(sum(final_sector_summary.values()) / len(final_sector_summary))
+    hosp              = _hospital_maintained_score(hospital_health_log)
+    no_blackout       = _clamp(1.0 if all(v > 0.0 for v in final_sector_summary.values()) else 0.0)
+    cascade           = _cascade_contained_score(failure_history, total_nodes)
+    budget_efficiency = _budget_conservation_score(budget_spent, budget_total)
+    depth             = _cascade_depth_score(cascade_depth_log or [], total_nodes)
+    dep_order         = _dependency_order_score(dependency_order_log or [])
+    proactive         = _proactive_rate_score(action_history or [])
+    # P2: centrality protection (optional — defaults to neutral 0.5 when not passed)
+    centrality        = _centrality_protection_score(
+        action_history or [], high_centrality_nodes or [], failure_history
+    )
 
     raw = (0.20 * avg
            + 0.25 * hosp
            + 0.15 * no_blackout
            + 0.10 * cascade
-           + 0.10 * budget_efficiency
-           + 0.10 * depth
+           + 0.08 * budget_efficiency   # slightly reduced to make room
+           + 0.08 * depth               # slightly reduced to make room
            + 0.05 * dep_order
-           + 0.05 * intervention)
+           + 0.04 * proactive
+           + 0.05 * centrality)         # NEW weight  → sum = 1.00
     return _safe(raw)
 
 
@@ -306,34 +345,99 @@ def grade_cyberattack(
     cascade_depth_log: List[int] | None = None,
     dependency_order_log: List[int] | None = None,
     action_history: List[str] | None = None,
+    high_centrality_nodes: List[str] | None = None,   # P2: centrality-aware bonus
 ) -> float:
     """
     task_cyberattack grader.
     Sustained SCADA + compound faults + storm — hardest scenario.
-    Weights: avg=0.18, hosp=0.28, no_blackout=0.16, cascade=0.10, budget_eff=0.10,
-             depth=0.08, dep_order=0.05, intervention=0.05   (sum=1.00)
+    Weights: avg=0.18, hosp=0.28, no_blackout=0.16, cascade=0.10, budget_eff=0.08,
+             depth=0.06, dep_order=0.05, proactive=0.04, centrality=0.05  (sum=1.00)
     """
     if not final_sector_summary:
         return _safe(0.5)
 
-    avg              = _clamp(sum(final_sector_summary.values()) / len(final_sector_summary))
-    hosp             = _hospital_maintained_score(hospital_health_log)
-    no_blackout      = _clamp(1.0 if all(v > 0.0 for v in final_sector_summary.values()) else 0.0)
-    cascade          = _cascade_contained_score(failure_history, total_nodes)
-    budget_efficiency = _clamp(1.0 - (budget_spent / max(float(budget_total), 1e-9)))
-    depth            = _cascade_depth_score(cascade_depth_log or [], total_nodes)
-    dep_order        = _dependency_order_score(dependency_order_log or [])
-    intervention     = _intervention_efficiency_score(action_history or [], budget_spent, budget_total)
+    avg               = _clamp(sum(final_sector_summary.values()) / len(final_sector_summary))
+    hosp              = _hospital_maintained_score(hospital_health_log)
+    no_blackout       = _clamp(1.0 if all(v > 0.0 for v in final_sector_summary.values()) else 0.0)
+    cascade           = _cascade_contained_score(failure_history, total_nodes)
+    budget_efficiency = _budget_conservation_score(budget_spent, budget_total)
+    depth             = _cascade_depth_score(cascade_depth_log or [], total_nodes)
+    dep_order         = _dependency_order_score(dependency_order_log or [])
+    proactive         = _proactive_rate_score(action_history or [])
+    # P2: centrality protection (optional — defaults to neutral 0.5 when not passed)
+    centrality        = _centrality_protection_score(
+        action_history or [], high_centrality_nodes or [], failure_history
+    )
 
     raw = (0.18 * avg
            + 0.28 * hosp
            + 0.16 * no_blackout
            + 0.10 * cascade
-           + 0.10 * budget_efficiency
-           + 0.08 * depth
+           + 0.08 * budget_efficiency   # slightly reduced to make room
+           + 0.06 * depth               # slightly reduced to make room
            + 0.05 * dep_order
-           + 0.05 * intervention)
+           + 0.04 * proactive
+           + 0.05 * centrality)         # NEW weight  → sum = 1.00
     return _safe(raw)
+
+
+# ---------------------------------------------------------------------------
+# Dispatch table
+# ---------------------------------------------------------------------------
+
+def grade_real_city(
+    failure_history: List[List[str]] = [],
+    hospital_health_log: List[float] = [],
+    cascade_depth_log: List[int] = [],
+    dependency_order_log: List[int] = [],
+    action_history: List[str] = [],
+    final_sector_summary: Dict[str, float] = {},
+    budget_spent: float = 0.0,
+    budget_total: float = 15.0,
+    total_nodes: int = 18,
+    **kwargs,
+) -> float:
+    """
+    Metro City (18-node, 35-step) grader.
+
+    Components:
+      35%  Hospital survival  — min hospital health across all 35 steps
+      20%  Average infrastructure health across all active failures
+      20%  No-blackout preservation  — fraction of steps with 0 critical failures
+      15%  Radius coverage utilized  — action diversity (agent used non-wait actions)
+      10%  Cascade containment  — low average cascade depth
+    """
+    steps = max(len(failure_history), 1)
+
+    # 1. Hospital survival
+    avg_hospital_health = sum(hospital_health_log) / max(len(hospital_health_log), 1)
+    hospital_score = _clamp(avg_hospital_health)
+
+    # 2. Average infrastructure health (from failure history)
+    total_failures = sum(len(f) for f in failure_history)
+    failure_rate = total_failures / max(steps * total_nodes, 1)
+    health_score = _clamp(1.0 - failure_rate)
+
+    # 3. No-blackout preservation (steps with zero critical failures)
+    zero_failure_steps = sum(1 for f in failure_history if len(f) == 0)
+    blackout_score = _clamp(zero_failure_steps / steps)
+
+    # 4. Action diversity (proxy for radius coverage utilization)
+    non_wait  = sum(1 for a in action_history if a != "wait")
+    diversity = _clamp(non_wait / max(len(action_history), 1))
+
+    # 5. Cascade containment
+    avg_depth = sum(cascade_depth_log) / max(len(cascade_depth_log), 1)
+    cascade_score = _clamp(1.0 - avg_depth / 5.0)
+
+    composite = (
+        0.35 * hospital_score
+        + 0.20 * health_score
+        + 0.20 * blackout_score
+        + 0.15 * diversity
+        + 0.10 * cascade_score
+    )
+    return _safe(composite)
 
 
 # ---------------------------------------------------------------------------
@@ -346,6 +450,7 @@ GRADERS = {
     "task_hard":         grade_hard,
     "task_gen_blackout": grade_gen_blackout,
     "task_cyberattack":  grade_cyberattack,
+    "task_real_city":    grade_real_city,
 }
 
 
@@ -353,7 +458,7 @@ GRADERS = {
 # Public entry point
 # ---------------------------------------------------------------------------
 
-def grade(task_id: str, **kwargs) -> float:
+def grade(task_id: str, uncapped: bool = False, **kwargs) -> float:
     """
     Dispatch to the appropriate grader and guarantee the result is in (0, 1).
 
@@ -362,8 +467,19 @@ def grade(task_id: str, **kwargs) -> float:
     2. grade() applies _safe() once more on the final value so that any
        future change to a grader cannot accidentally leak 0.0 or 1.0.
 
-    Exception handling: catch ALL exceptions (not just TypeError/ValueError)
-    so that an unexpected crash in a grader never propagates to the pipeline.
+    Args:
+        task_id:  One of the 5 CascadeGuard task IDs.
+        uncapped: If True, returns the raw grader composite BEFORE the final
+                  _safe() boundary clamp. This is the Mercor bonus sub-theme
+                  (uncapped reward environments). The value is still passed
+                  through each sub-scorer's _clamp(), so it is numerically
+                  stable but NOT guaranteed to be in (0.01, 0.99).
+                  Use only for training signals — never for OpenEnv submission.
+        **kwargs: All grader arguments (failure_history, hospital_health_log,
+                  final_sector_summary, budget_spent, budget_total, etc.)
+
+    Exception handling: catches ALL exceptions so grader crashes never
+    propagate to the OpenEnv pipeline.
     """
     if task_id not in GRADERS:
         # Unknown task — return neutral rather than crashing.
@@ -374,6 +490,11 @@ def grade(task_id: str, **kwargs) -> float:
     except Exception:
         # Any grader crash → neutral fallback, never 0.0 or 1.0.
         return _safe(0.5)
+
+    if uncapped:
+        # Return raw composite (already through sub-scorer _clamp(), but NOT _safe())
+        # Caller is responsible for interpreting values outside (0.01, 0.99).
+        return raw
 
     # Belt-and-suspenders: apply _safe even though graders already do so.
     return _safe(raw)

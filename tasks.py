@@ -11,11 +11,11 @@ TASK_CONFIGS: Dict[str, dict] = {
         "max_steps": 10,
         "budget": 5.0,
         "nodes": [
-            {"node_id": "POWER_GEN_1",   "sector": "power", "is_critical": False},
-            {"node_id": "POWER_TRANS_1", "sector": "power", "is_critical": False},
-            {"node_id": "POWER_TRANS_2", "sector": "power", "is_critical": False},
-            {"node_id": "POWER_DIST_1",  "sector": "power", "is_critical": False},
-            {"node_id": "POWER_DIST_2",  "sector": "power", "is_critical": False},
+            {"node_id": "POWER_GEN_1",   "sector": "power", "is_critical": False, "lat": 19.076, "lon": 72.877, "service_radius_km": 50.0},
+            {"node_id": "POWER_TRANS_1", "sector": "power", "is_critical": False, "lat": 19.120, "lon": 72.840, "service_radius_km": 30.0},
+            {"node_id": "POWER_TRANS_2", "sector": "power", "is_critical": False, "lat": 19.180, "lon": 72.960, "service_radius_km": 30.0},
+            {"node_id": "POWER_DIST_1",  "sector": "power", "is_critical": False, "lat": 19.090, "lon": 72.860, "service_radius_km": 20.0},
+            {"node_id": "POWER_DIST_2",  "sector": "power", "is_critical": False, "lat": 19.150, "lon": 72.900, "service_radius_km": 20.0},
         ],
         "edges": [
             {"source_id": "POWER_GEN_1",   "target_id": "POWER_TRANS_1"},
@@ -38,20 +38,20 @@ TASK_CONFIGS: Dict[str, dict] = {
         "budget": 10.0,
         "nodes": [
             # power (5)
-            {"node_id": "POWER_GEN_1",   "sector": "power",    "is_critical": False},
-            {"node_id": "POWER_TRANS_1", "sector": "power",    "is_critical": False},
-            {"node_id": "POWER_TRANS_2", "sector": "power",    "is_critical": False},
-            {"node_id": "POWER_DIST_1",  "sector": "power",    "is_critical": False},
-            {"node_id": "POWER_DIST_2",  "sector": "power",    "is_critical": False},
+            {"node_id": "POWER_GEN_1",   "sector": "power",    "is_critical": False, "lat": 19.076, "lon": 72.877, "service_radius_km": 50.0},
+            {"node_id": "POWER_TRANS_1", "sector": "power",    "is_critical": False, "lat": 19.120, "lon": 72.840, "service_radius_km": 30.0},
+            {"node_id": "POWER_TRANS_2", "sector": "power",    "is_critical": False, "lat": 19.180, "lon": 72.960, "service_radius_km": 30.0},
+            {"node_id": "POWER_DIST_1",  "sector": "power",    "is_critical": False, "lat": 19.090, "lon": 72.860, "service_radius_km": 20.0},
+            {"node_id": "POWER_DIST_2",  "sector": "power",    "is_critical": False, "lat": 19.150, "lon": 72.900, "service_radius_km": 20.0},
             # water (4)
-            {"node_id": "WATER_TREAT_1", "sector": "water",    "is_critical": False},
-            {"node_id": "WATER_PUMP_1",  "sector": "water",    "is_critical": False},
-            {"node_id": "WATER_PUMP_2",  "sector": "water",    "is_critical": False},
-            {"node_id": "WATER_DIST_1",  "sector": "water",    "is_critical": False},
+            {"node_id": "WATER_TREAT_1", "sector": "water",    "is_critical": False, "lat": 19.070, "lon": 72.830, "service_radius_km": 25.0},
+            {"node_id": "WATER_PUMP_1",  "sector": "water",    "is_critical": False, "lat": 19.060, "lon": 72.820, "service_radius_km": 15.0},
+            {"node_id": "WATER_PUMP_2",  "sector": "water",    "is_critical": False, "lat": 19.105, "lon": 72.870, "service_radius_km": 15.0},
+            {"node_id": "WATER_DIST_1",  "sector": "water",    "is_critical": False, "lat": 19.080, "lon": 72.855, "service_radius_km": 12.0},
             # hospital (3)
-            {"node_id": "HOSP_1",        "sector": "hospital", "is_critical": True},
-            {"node_id": "HOSP_2",        "sector": "hospital", "is_critical": True},
-            {"node_id": "EMERG_1",       "sector": "hospital", "is_critical": False},
+            {"node_id": "HOSP_1",        "sector": "hospital", "is_critical": True,  "lat": 19.055, "lon": 72.835, "service_radius_km": 8.0},
+            {"node_id": "HOSP_2",        "sector": "hospital", "is_critical": True,  "lat": 19.115, "lon": 72.875, "service_radius_km": 8.0},
+            {"node_id": "EMERG_1",       "sector": "hospital", "is_critical": False, "lat": 19.075, "lon": 72.845, "service_radius_km": 10.0},
         ],
         "edges": [
             # power backbone
@@ -265,6 +265,96 @@ TASK_CONFIGS: Dict[str, dict] = {
             "Tests: sustained threat management, hospital protection, budget triage."
         ),
     },
+
+    # ------------------------------------------------------------------
+    # Task 6: Metro City — Geo-realistic full city resilience scenario
+    # 18 nodes, real Mumbai-inspired coordinates, monsoon story arc
+    # ------------------------------------------------------------------
+    "task_real_city": {
+        "task_id": "task_real_city",
+        "seed": 2026,
+        "max_steps": 35,
+        "budget": 15.0,
+        "nodes": [
+            # Power Generation (3) — large radius, wide coverage
+            {"node_id": "POWER_GEN_1",   "sector": "power",    "is_critical": False, "lat": 19.076, "lon": 72.877, "service_radius_km": 50.0},
+            {"node_id": "POWER_GEN_2",   "sector": "power",    "is_critical": False, "lat": 19.220, "lon": 72.978, "service_radius_km": 45.0},
+            {"node_id": "POWER_GEN_3",   "sector": "power",    "is_critical": False, "lat": 19.300, "lon": 73.050, "service_radius_km": 45.0},
+            # Transmission (3) — mid radius
+            {"node_id": "POWER_TRANS_1", "sector": "power",    "is_critical": False, "lat": 19.120, "lon": 72.840, "service_radius_km": 30.0},
+            {"node_id": "POWER_TRANS_2", "sector": "power",    "is_critical": False, "lat": 19.180, "lon": 72.960, "service_radius_km": 30.0},
+            {"node_id": "POWER_TRANS_3", "sector": "power",    "is_critical": False, "lat": 19.250, "lon": 73.000, "service_radius_km": 28.0},
+            # Distribution (3) — local radius
+            {"node_id": "POWER_DIST_1",  "sector": "power",    "is_critical": False, "lat": 19.090, "lon": 72.860, "service_radius_km": 20.0},
+            {"node_id": "POWER_DIST_2",  "sector": "power",    "is_critical": False, "lat": 19.150, "lon": 72.900, "service_radius_km": 20.0},
+            # Water (3)
+            {"node_id": "WATER_TREAT_1", "sector": "water",    "is_critical": False, "lat": 19.070, "lon": 72.830, "service_radius_km": 25.0},
+            {"node_id": "WATER_TREAT_2", "sector": "water",    "is_critical": False, "lat": 19.200, "lon": 72.850, "service_radius_km": 22.0},
+            {"node_id": "WATER_PUMP_1",  "sector": "water",    "is_critical": False, "lat": 19.060, "lon": 72.820, "service_radius_km": 15.0},
+            {"node_id": "WATER_DIST_1",  "sector": "water",    "is_critical": False, "lat": 19.080, "lon": 72.855, "service_radius_km": 12.0},
+            # Hospital (4) — critical care nodes
+            {"node_id": "HOSP_1",        "sector": "hospital", "is_critical": True,  "lat": 19.055, "lon": 72.835, "service_radius_km": 8.0},
+            {"node_id": "HOSP_2",        "sector": "hospital", "is_critical": True,  "lat": 19.115, "lon": 72.875, "service_radius_km": 8.0},
+            {"node_id": "HOSP_3",        "sector": "hospital", "is_critical": True,  "lat": 19.160, "lon": 72.820, "service_radius_km": 8.0},
+            {"node_id": "EMERG_1",       "sector": "hospital", "is_critical": False, "lat": 19.075, "lon": 72.845, "service_radius_km": 10.0},
+            # Telecom (3) — large radius, covers nodes for observation confidence
+            {"node_id": "TELECOM_1",        "sector": "telecom",  "is_critical": False, "lat": 19.100, "lon": 72.820, "service_radius_km": 100.0},
+            {"node_id": "TELECOM_2",        "sector": "telecom",  "is_critical": False, "lat": 19.050, "lon": 72.900, "service_radius_km": 100.0},
+        ],
+        "edges": [
+            # Power backbone
+            {"source_id": "POWER_GEN_1",   "target_id": "POWER_TRANS_1"},
+            {"source_id": "POWER_GEN_1",   "target_id": "POWER_TRANS_2"},
+            {"source_id": "POWER_GEN_2",   "target_id": "POWER_TRANS_2"},
+            {"source_id": "POWER_GEN_2",   "target_id": "POWER_TRANS_3"},
+            {"source_id": "POWER_GEN_3",   "target_id": "POWER_TRANS_3"},
+            {"source_id": "POWER_TRANS_1", "target_id": "POWER_DIST_1"},
+            {"source_id": "POWER_TRANS_2", "target_id": "POWER_DIST_2"},
+            # Water -> power
+            {"source_id": "POWER_DIST_1",  "target_id": "WATER_TREAT_1"},
+            {"source_id": "POWER_DIST_2",  "target_id": "WATER_TREAT_2"},
+            {"source_id": "POWER_DIST_1",  "target_id": "WATER_PUMP_1"},
+            {"source_id": "WATER_PUMP_1",  "target_id": "WATER_DIST_1"},
+            # Hospital -> power + water
+            {"source_id": "POWER_DIST_1",  "target_id": "HOSP_1"},
+            {"source_id": "WATER_DIST_1",  "target_id": "HOSP_1"},
+            {"source_id": "POWER_DIST_2",  "target_id": "HOSP_2"},
+            {"source_id": "WATER_TREAT_2", "target_id": "HOSP_2"},
+            {"source_id": "POWER_DIST_2",  "target_id": "HOSP_3"},
+            {"source_id": "POWER_DIST_1",  "target_id": "EMERG_1"},
+            # Telecom -> power transmission
+            {"source_id": "POWER_TRANS_1", "target_id": "TELECOM_1"},
+            {"source_id": "POWER_TRANS_2", "target_id": "TELECOM_2"},
+        ],
+        "stress_schedule": {
+            # Monsoon phase 1: storm warning
+            3:  {"type": "weather",       "target": None,            "effect": "storm_warning"},
+            # Equipment fault during storm warning — tests proactive hardening
+            5:  {"type": "equipment_fault","target": "POWER_GEN_1",  "effect": -0.60},
+            # Storm escalates
+            8:  {"type": "weather",       "target": None,            "effect": "extreme_storm"},
+            # Second fault — cascades to hospitals
+            12: {"type": "equipment_fault","target": "POWER_DIST_1", "effect": -0.70},
+            # SCADA anomaly on telecom — degrades observability
+            15: {"type": "scada_anomaly", "target": "TELECOM_1",    "effect": -0.04, "recurring": True},
+            # Storm clears — recovery window
+            20: {"type": "weather",       "target": None,            "effect": "clear"},
+            # Late fault — tests if agent saved budget
+            28: {"type": "equipment_fault","target": "POWER_GEN_2",  "effect": -0.55},
+        },
+        "delayed_sectors": ["water"],
+        "partial_obs_nodes": ["TELECOM_1", "HOSP_3"],
+        "description": (
+            "Metro City Resilience — 18-node Mumbai-inspired city with real geo-coordinates. "
+            "Monsoon season: storm_warning at step 3, POWER_GEN_1 fault step 5, extreme_storm step 8, "
+            "POWER_DIST_1 cascade fault step 12 threatening hospitals, "
+            "SCADA anomaly on TELECOM_1 from step 15 (degrades observability), "
+            "storm clears step 20, late POWER_GEN_2 fault step 28. "
+            "Tests geo-aware radius coverage: POWER_GEN_2 (45km) partially covers HOSP_2 area. "
+            "Agent must prioritise backbone nodes, manage telecom for observation confidence, "
+            "and protect 4 hospital nodes across a 35-step monsoon crisis."
+        ),
+    },
 }
 
 
@@ -293,6 +383,11 @@ TASK_SEED_SPLITS: Dict[str, Dict[str, List[int]]] = {
         "train": [314, 1314, 2314, 3314, 4314],
         "validation": [5314, 6314],
         "holdout": [7314, 8314],
+    },
+    "task_real_city": {
+        "train": [2026, 3026, 4026, 5026, 6026],
+        "validation": [7026, 8026],
+        "holdout": [9026, 10026],
     },
 }
 

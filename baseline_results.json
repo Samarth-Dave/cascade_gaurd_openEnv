@@ -1,53 +1,81 @@
 {
-  "timestamp_utc": "2026-04-08T13:35:51.075300+00:00",
-  "model_name": "meta-llama/Llama-3.3-70B-Instruct",
-  "api_base_url": "https://router.huggingface.co/v1",
+  "timestamp_utc": "2026-04-21T15:35:06.843170+00:00",
+  "model_name": "llama-3.1-8b-instant",
+  "api_base_url": "https://api.groq.com/openai/v1",
   "eval_mode": "baseline",
   "eval_split": "holdout",
   "records": [
     {
       "task_id": "task_easy",
-      "score": 0.9415,
+      "score": 0.9485,
       "seed": 7042,
       "scenario_split": "holdout",
       "scenario_index": 0
     },
     {
       "task_id": "task_medium",
-      "score": 0.3884,
+      "score": 0.9196,
       "seed": 8123,
       "scenario_split": "holdout",
       "scenario_index": 1
     },
     {
       "task_id": "task_hard",
-      "score": 0.3581,
+      "score": 0.8101,
       "seed": 7999,
       "scenario_split": "holdout",
       "scenario_index": 2
+    },
+    {
+      "task_id": "task_gen_blackout",
+      "score": 0.9345,
+      "seed": 8777,
+      "scenario_split": "holdout",
+      "scenario_index": 3
+    },
+    {
+      "task_id": "task_cyberattack",
+      "score": 0.7935,
+      "seed": 7314,
+      "scenario_split": "holdout",
+      "scenario_index": 4
     }
   ],
   "task_summary": {
     "task_easy": {
       "runs": 1,
-      "mean_score": 0.9415,
+      "mean_score": 0.9485,
       "std_score": 0.01,
-      "min_score": 0.9415,
-      "max_score": 0.9415
+      "min_score": 0.9485,
+      "max_score": 0.9485
     },
     "task_medium": {
       "runs": 1,
-      "mean_score": 0.3884,
+      "mean_score": 0.9196,
       "std_score": 0.01,
-      "min_score": 0.3884,
-      "max_score": 0.3884
+      "min_score": 0.9196,
+      "max_score": 0.9196
     },
     "task_hard": {
       "runs": 1,
-      "mean_score": 0.3581,
+      "mean_score": 0.8101,
       "std_score": 0.01,
-      "min_score": 0.3581,
-      "max_score": 0.3581
+      "min_score": 0.8101,
+      "max_score": 0.8101
+    },
+    "task_gen_blackout": {
+      "runs": 1,
+      "mean_score": 0.9345,
+      "std_score": 0.01,
+      "min_score": 0.9345,
+      "max_score": 0.9345
+    },
+    "task_cyberattack": {
+      "runs": 1,
+      "mean_score": 0.7935,
+      "std_score": 0.01,
+      "min_score": 0.7935,
+      "max_score": 0.7935
     }
   }
 }
