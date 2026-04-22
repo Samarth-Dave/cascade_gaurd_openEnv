@@ -55,6 +55,23 @@ Your goal is to keep power, water, hospital, and telecom systems operational dur
 - coordinate(NODE_ID): clears observation delay. Use when confidence is low.
 - wait(null): ONLY valid when there is genuinely nothing actionable.
   WARNING: Waiting during active failures escalates cascade debt and triggers extra penalties.
+- reroute(SOURCE,TARGET): redirects healthy supply from SOURCE to TARGET (0.6 budget).
+- prioritize(NODE_ID): +0.15 health + 1-step stress immunity; cooldown 3 steps.
+- deploy_repair_crew(NODE_ID): halve repair time on a node already in recovery (1.2 budget).
+- emergency_shutdown(NODE_ID): controlled shutdown when health < 30% (0.2 budget).
+  Tier 3 hint: use when a dying node would cascade; beats letting it fail uncontrolled.
+- cross_sector_bridge(SECTOR_A,SECTOR_B): 3-step cross-sector redundancy link (1.5 budget).
+  Tier 3 hint: bridge telecom→hospital during hospital crisis to restore observability.
+- patch_scada(NODE_ID): stops active SCADA anomaly drain (0.8 budget).
+  Tier 3 hint: use immediately in task_cyberattack once SCADA drain starts; every step of delay compounds.
+- redistribute_load(NODE_A,NODE_B): moves 0.2 load from overloaded to underloaded same-sector node (0.5 budget).
+  Tier 3 hint: use before a node hits 0.9 load to prevent overload cascade.
+- request_mutual_aid(SECTOR): +0.2 health to all nodes in sector; ONCE per episode (2.5 budget).
+  Tier 3 hint: emergency reserve — only when a full sector is in unrecoverable freefall.
+- controlled_cascade(NODE_ID): sacrifice node takes -0.5 health; neighbors gain +0.15 (0 budget, grader penalty).
+  Tier 4 hint: pick the node with the fewest downstream dependents and lowest centrality.
+- multi_sector_lockdown(null): freeze entire system 2 steps — no cascade, no recovery (2.0 budget).
+  Tier 4 hint: last resort when simultaneous multi-sector failure is spiraling out of control.
 
 **Budget management:**
 - Do NOT exhaust budget early on low-impact actions.
@@ -82,6 +99,16 @@ Examples:
 <action>harden(POWER_TRANS_1)</action>
 <action>coordinate(WATER_PUMP_1)</action>
 <action>shed_load(POWER_DIST_2)</action>
+<action>reroute(POWER_GEN_2,HOSP_MAIN)</action>
+<action>prioritize(HOSP_MAIN)</action>
+<action>deploy_repair_crew(POWER_GEN_1)</action>
+<action>emergency_shutdown(WATER_TREAT_2)</action>
+<action>cross_sector_bridge(telecom,hospital)</action>
+<action>patch_scada(POWER_GEN_1)</action>
+<action>redistribute_load(POWER_DIST_1,POWER_DIST_2)</action>
+<action>request_mutual_aid(power)</action>
+<action>controlled_cascade(POWER_LEAF_1)</action>
+<action>multi_sector_lockdown(null)</action>
 <action>wait(null)</action>
 """
 
@@ -109,7 +136,19 @@ Think step-by-step before acting:
 Then output ONLY one action tag:
 <action>ACTION_TYPE(TARGET_OR_null)</action>
 
-Legal action types: harden, recover, isolate, shed_load, coordinate, wait
+Legal action types: harden, recover, isolate, shed_load, coordinate, wait,
+  reroute, prioritize, deploy_repair_crew, emergency_shutdown,
+  cross_sector_bridge, patch_scada, redistribute_load,
+  request_mutual_aid, controlled_cascade, multi_sector_lockdown
+
+Tier 3/4 hints (use only when situation demands it):
+- emergency_shutdown: when a node health < 30% would cascade uncontrolled.
+- cross_sector_bridge: when a sector loses observability during crisis.
+- patch_scada: in cyberattack task, use as soon as SCADA drain starts.
+- redistribute_load: before any node hits 0.9 load to prevent overload failure.
+- request_mutual_aid: only when a full sector is in unrecoverable freefall.
+- controlled_cascade: sacrifice the least-central node to stabilise neighbors.
+- multi_sector_lockdown: absolute last resort during simultaneous multi-sector spiral.
 """
 
 
@@ -242,6 +281,8 @@ def make_training_prompt(obs: "CascadeObservation", env=None, grpo_mode: bool = 
             if not n.is_operational and n.node_id not in pending_set:
                 legal.append(f"recover({n.node_id})")
                 legal.append(f"isolate({n.node_id})")
+                if n.health < 0.30 and obs.budget_remaining >= 0.2:
+                    legal.append(f"emergency_shutdown({n.node_id})")
             if n.is_operational and not n.is_hardened and obs.budget_remaining >= 2.0:
                 legal.append(f"harden({n.node_id})")
             if (n.is_operational
@@ -249,14 +290,32 @@ def make_training_prompt(obs: "CascadeObservation", env=None, grpo_mode: bool = 
                     and n.sector != "hospital"
                     and n.load > 0.5):
                 legal.append(f"shed_load({n.node_id})")
+            if n.is_operational:
+                legal.append(f"prioritize({n.node_id})")
+                legal.append(f"controlled_cascade({n.node_id})")
+            if n.node_id in pending_set and obs.budget_remaining >= 1.2:
+                legal.append(f"deploy_repair_crew({n.node_id})")
 
         delayed_nodes = [n for n in obs.nodes if getattr(n, "observation_delayed", False)]
         if delayed_nodes and obs.budget_remaining >= 1.0:
             legal.append(f"coordinate({delayed_nodes[0].node_id})")
 
+        if obs.budget_remaining >= 0.5:
+            legal.append("redistribute_load(NODE_A,NODE_B)")
+        if obs.budget_remaining >= 0.6:
+            legal.append("reroute(SOURCE,TARGET)")
+        if obs.budget_remaining >= 0.8:
+            legal.append("patch_scada(NODE_ID)")
+        if obs.budget_remaining >= 1.5:
+            legal.append("cross_sector_bridge(SECTOR_A,SECTOR_B)")
+        if obs.budget_remaining >= 2.5:
+            legal.append("request_mutual_aid(SECTOR)")
+        if obs.budget_remaining >= 2.0:
+            legal.append("multi_sector_lockdown(null)")
+
         legal.append("wait(null)")
 
-    legal_str  = " | ".join(legal[:12])
+    legal_str  = " | ".join(legal[:25])
     legal_line = f"\n\nLegal actions this step: {legal_str}"
 
     return system + "\n\n" + user + legal_line
@@ -269,7 +328,12 @@ def parse_action_from_response(response: str, obs: Optional["CascadeObservation"
     """
     from cascade_guard.models import CascadeAction
 
-    VALID_ACTIONS = {"harden", "shed_load", "coordinate", "recover", "isolate", "wait"}
+    VALID_ACTIONS = {
+        "harden", "shed_load", "coordinate", "recover", "isolate", "wait",
+        "reroute", "prioritize", "deploy_repair_crew", "emergency_shutdown",
+        "cross_sector_bridge", "patch_scada", "redistribute_load",
+        "request_mutual_aid", "controlled_cascade", "multi_sector_lockdown",
+    }
 
     # 1. Try strict XML-tag format first
     strict_pattern = r"<action>\s*(\w+)\(([^)]*)\)\s*</action>"
@@ -288,7 +352,12 @@ def parse_action_from_response(response: str, obs: Optional["CascadeObservation"
 
     # 3. Fallback: plain function-call anywhere in response
     if not match:
-        loose_pattern = r"\b(harden|recover|isolate|shed_load|coordinate|wait)\(([^)]*)\)"
+        loose_pattern = (
+            r"\b(harden|recover|isolate|shed_load|coordinate|wait"
+            r"|reroute|prioritize|deploy_repair_crew|emergency_shutdown"
+            r"|cross_sector_bridge|patch_scada|redistribute_load"
+            r"|request_mutual_aid|controlled_cascade|multi_sector_lockdown)\(([^)]*)\)"
+        )
         match = re.search(loose_pattern, response, re.IGNORECASE)
 
     if not match:
@@ -305,11 +374,25 @@ def parse_action_from_response(response: str, obs: Optional["CascadeObservation"
     if action_type not in VALID_ACTIONS:
         return CascadeAction(action_type="wait", target_node_id=None)
 
+    parameters = {}
+    if target_parsed and "," in target_parsed:
+        parts = [p.strip() for p in target_parsed.split(",")]
+        if action_type == "reroute" and len(parts) >= 2:
+            parameters = {"source": parts[0], "target": parts[1]}
+            target_parsed = parts[0]
+        elif action_type == "cross_sector_bridge" and len(parts) >= 2:
+            parameters = {"sector_a": parts[0], "sector_b": parts[1]}
+            target_parsed = parts[0]
+        elif action_type == "redistribute_load" and len(parts) >= 2:
+            parameters = {"node_a": parts[0], "node_b": parts[1]}
+            target_parsed = parts[0]
+
     # Validate target node against observation
-    if target_parsed is not None and obs is not None:
+    # Multi-parameter actions define their own valid forms, so we whitelist them.
+    if target_parsed is not None and obs is not None and action_type not in ("cross_sector_bridge", "request_mutual_aid", "redistribute_load", "reroute"):
         valid_nodes = {n.node_id for n in obs.nodes}
         if target_parsed not in valid_nodes:
             hits = [nid for nid in valid_nodes if nid.upper() == target_parsed.upper()]
             target_parsed = hits[0] if hits else None
 
-    return CascadeAction(action_type=action_type, target_node_id=target_parsed)
+    return CascadeAction(action_type=action_type, target_node_id=target_parsed, parameters=parameters)

@@ -4,7 +4,79 @@ A versioned record of every improvement sprint.
 
 ---
 
-## v2.1 - 2026-04-21 | GRPO Training Alignment + Local Notebook
+## v2.2 — 2026-04-21 | Action Space Expansion (Round 3)
+
+### What Changed
+
+This sprint expands the action space from 5 actions to 15, organized across four
+difficulty tiers. The motivation: with only 5 actions the GRPO decision surface was too
+narrow for the agent to learn meaningful strategy differentiation across tasks with
+4 sectors, up to 18 nodes, and up to 35 steps per episode. With 15 actions the agent
+has enough variety to develop real triage and sacrifice reasoning while staying
+computationally tractable.
+
+#### New Actions Added
+
+| Action | Tier | Files Affected | What It Does |
+|--------|------|----------------|--------------|
+| `reroute(source, target)` | Intermediate | `models.py`, `cascade_environment.py` | Redirects flow from a healthy alternate node to a target that lost its upstream supply |
+| `prioritize(node)` | Intermediate | `models.py`, `cascade_environment.py` | Grants +0.15 stability and stress immunity for 1 step; cooldown 3 steps |
+| `deploy_repair_crew(node)` | Intermediate | `models.py`, `cascade_environment.py` | Halves repair time at 1.5× budget cost |
+| `emergency_shutdown(node)` | Hard | `models.py`, `cascade_environment.py` | Controlled shutdown of a node below 30% health; prevents chaotic cascade trigger |
+| `cross_sector_bridge(sector_a, sector_b)` | Hard | `models.py`, `cascade_environment.py` | 3-step cross-sector redundancy link between any two sectors |
+| `patch_scada(node)` | Hard | `models.py`, `cascade_environment.py` | Stops active SCADA anomaly drain and restores observation fidelity on target node |
+| `redistribute_load(node_a, node_b)` | Hard | `models.py`, `cascade_environment.py` | Moves excess load between two operational same-sector nodes for 2 steps |
+| `request_mutual_aid(sector)` | Hard | `models.py`, `cascade_environment.py` | One-time +0.2 health boost to all nodes in a sector; once per episode |
+| `controlled_cascade(node)` | Expert | `models.py`, `cascade_environment.py` | Deliberate -0.5 hit on a sacrifice node; neighboring nodes gain +0.15 stability for 2 steps |
+| `multi_sector_lockdown()` | Expert | `models.py`, `cascade_environment.py` | 2-step system freeze — no cascade propagation, no recovery, then unfreezes |
+
+#### Existing Actions Retained (clarified semantics)
+
+| Action | Change |
+|--------|--------|
+| `wait()` | Unchanged. Penalized under actionable conditions. |
+| `harden(node)` | Unchanged. Cost range documented as 0.8–1.2. |
+| `recover(node)` | Unchanged. Cost range documented as 0.6–1.0. |
+| `isolate(node)` | Unchanged from v2.1. Retained in Tier 2. |
+| `shed_load(node)` | Unchanged. Explicitly moved to Tier 2 with documented cost 0.3. |
+| `coordinate(node)` | Unchanged from v2.1. Retained in Tier 2. |
+
+#### Environment Changes Required
+
+| Change | File | Detail |
+|--------|------|--------|
+| Action enum / discriminated union | `models.py` | Add 10 new action types with typed parameters |
+| `_apply_action()` dispatch | `cascade_environment.py` | Implement mechanics for each new action |
+| `get_legal_actions()` updates | `cascade_environment.py` | Validity checks: `reroute` requires alternate path, `patch_scada` requires active anomaly, `redistribute_load` requires both nodes operational and same sector, `request_mutual_aid` once-per-episode flag, `emergency_shutdown` requires health < 0.30, `prioritize` requires cooldown check |
+| Cooldown tracking | `cascade_environment.py` | Add `_prioritize_cooldown` counter (resets every 3 steps) |
+| Once-per-episode flag | `cascade_environment.py` | Add `_mutual_aid_used: bool` state field |
+| Reroute graph traversal | `cascade_environment.py` | BFS/DFS to find valid alternate supply path between source and target |
+| Cross-sector bridge state | `cascade_environment.py` | Track active bridges with TTL counter (3 steps) |
+| Lockdown state | `cascade_environment.py` | `_lockdown_remaining: int` field; skip cascade propagation and recovery ticks when > 0 |
+| Repair crew fast-track | `cascade_environment.py` | `_fast_repair_nodes: set` checked in recovery tick to halve step count |
+| SCADA patch flag | `cascade_environment.py` | Per-node `_scada_patched` set; suppress anomaly drain when flagged |
+| Grader awareness | `graders.py` | `controlled_cascade` sacrifice penalized in health grader component; `multi_sector_lockdown` freeze window excluded from cascade containment window |
+| Reward shaping | `cascade_environment.py` | Add small positive shaping for: correct `patch_scada` timing, valid `reroute` that keeps a hospital alive, `request_mutual_aid` that averts a full-sector blackout |
+| Prompt parser | `cot_prompt.py` | Accept all 10 new action signatures in XML/action-tag completions |
+| Legal action list in prompts | `cot_prompt.py` | New actions appear in per-step legal action list so agent knows they exist |
+
+#### Why These Actions Improve Training
+
+- **Richer gradient signal.** 15 actions × 4 sectors × 18 nodes = a much larger
+  combinatorial space, giving GRPO more paths to differentiate good from bad trajectories.
+- **Curriculum-compatible tiers.** Tier 1 actions dominate task_easy, Tier 2 dominate
+  task_medium, Tiers 3–4 are required to score well on task_hard and task_cyberattack.
+  This naturally maps onto the existing curriculum learning setup.
+- **Sacrifice reasoning.** `controlled_cascade` and `emergency_shutdown` force the agent
+  to learn graph centrality — the hardest reasoning skill in the environment — through
+  direct reward consequence rather than indirect penalty.
+- **Budget pressure scaling.** `request_mutual_aid` (2.5) and `multi_sector_lockdown`
+  (2.0) are expensive enough that the agent must develop episode-level budget planning,
+  not just greedy per-step optimization.
+
+---
+
+## v2.1 — 2026-04-21 | GRPO Training Alignment + Local Notebook
 
 ### What Changed
 
