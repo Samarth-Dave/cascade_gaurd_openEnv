@@ -1,0 +1,210 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* CascadeGuard design system — all colors HSL */
+
+@layer base {
+  :root {
+    /* Surfaces */
+    --bg: 0 0% 98%;             /* #fafafa */
+    --background: 0 0% 98%;
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 5%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 5%;
+
+    /* Ink scale */
+    --ink: 0 0% 5%;             /* #0d0d0d */
+    --ink-2: 0 0% 33%;          /* #555 */
+    --ink-3: 0 0% 60%;          /* #999 */
+    --foreground: 0 0% 5%;
+
+    /* Brand accents */
+    --accent: 226 92% 52%;      /* #1446f5 blue */
+    --accent-foreground: 0 0% 100%;
+    --accent-2: 161 100% 33%;   /* #00a878 green */
+    --accent-3: 354 82% 50%;    /* #e8192c red */
+
+    /* Semantic */
+    --primary: 0 0% 5%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 0 0% 96%;
+    --secondary-foreground: 0 0% 5%;
+    --muted: 0 0% 96%;
+    --muted-foreground: 0 0% 40%;
+    --destructive: 354 82% 50%;
+    --destructive-foreground: 0 0% 100%;
+    --amber: 32 95% 44%;        /* #d97706 */
+    --purple: 262 83% 58%;      /* #7c3aed */
+    --green: 161 100% 33%;
+    --red: 354 82% 50%;
+
+    --border: 0 0% 0%;          /* used with /8 alpha */
+    --input: 0 0% 92%;
+    --ring: 226 92% 52%;
+
+    --radius: 0.5rem;
+    --sidebar-background: 0 0% 98%;
+    --sidebar-foreground: 0 0% 26%;
+    --sidebar-primary: 0 0% 10%;
+    --sidebar-primary-foreground: 0 0% 98%;
+    --sidebar-accent: 0 0% 96%;
+    --sidebar-accent-foreground: 0 0% 10%;
+    --sidebar-border: 220 13% 91%;
+    --sidebar-ring: 226 92% 52%;
+  }
+
+  .dark {
+    --bg: 0 0% 5%;
+    --background: 0 0% 5%;
+    --card: 0 0% 8%;
+    --card-foreground: 0 0% 98%;
+    --popover: 0 0% 8%;
+    --popover-foreground: 0 0% 98%;
+    --ink: 0 0% 98%;
+    --ink-2: 0 0% 70%;
+    --ink-3: 0 0% 45%;
+    --foreground: 0 0% 98%;
+    --primary: 0 0% 98%;
+    --primary-foreground: 0 0% 5%;
+    --secondary: 0 0% 14%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 0 0% 14%;
+    --muted-foreground: 0 0% 65%;
+    --destructive: 354 82% 50%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 0 0% 100%;
+    --input: 0 0% 14%;
+    --ring: 226 92% 52%;
+    --sidebar-background: 0 0% 10%;
+    --sidebar-foreground: 0 0% 96%;
+    --sidebar-primary: 226 92% 52%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 0 0% 16%;
+    --sidebar-accent-foreground: 0 0% 96%;
+    --sidebar-border: 0 0% 16%;
+    --sidebar-ring: 226 92% 52%;
+  }
+}
+
+@layer base {
+  * {
+    border-color: hsl(var(--border) / 0.08);
+  }
+  html, body, #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'DM Sans', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  .font-mono, code, pre, .mono {
+    font-family: 'DM Mono', ui-monospace, monospace;
+  }
+}
+
+/* ====== CascadeGuard utilities ====== */
+@layer utilities {
+  .cg-dotgrid {
+    background-image: radial-gradient(circle, hsl(0 0% 0% / 0.12) 1.2px, transparent 1.2px);
+    background-size: 28px 28px;
+    background-position: 0 0;
+  }
+  .cg-shadow-card { box-shadow: 0 1px 0 hsl(0 0% 0% / 0.04), 0 12px 30px -18px hsl(0 0% 0% / 0.18); }
+  .cg-shadow-pop  { box-shadow: 0 30px 80px -30px hsl(0 0% 0% / 0.45); }
+  .cg-border { border: 1px solid hsl(0 0% 0% / 0.08); }
+  .cg-border-strong { border: 1px solid hsl(0 0% 0% / 0.18); }
+  .cg-glass { background: hsl(0 0% 100% / 0.78); backdrop-filter: saturate(140%) blur(10px); }
+}
+
+/* ====== Keyframes ====== */
+@keyframes cg-fadeUp { from { opacity:0; transform: translateY(20px);} to {opacity:1; transform:none;} }
+@keyframes cg-livePulse {
+  0% { box-shadow: 0 0 0 0 hsl(var(--green) / 0.55); }
+  70%{ box-shadow: 0 0 0 10px hsl(var(--green) / 0); }
+  100%{ box-shadow: 0 0 0 0 hsl(var(--green) / 0); }
+}
+@keyframes cg-pulseRed {
+  0% { box-shadow: 0 0 0 0 hsl(var(--red) / 0.6); }
+  70%{ box-shadow: 0 0 0 10px hsl(var(--red) / 0); }
+  100%{ box-shadow: 0 0 0 0 hsl(var(--red) / 0); }
+}
+@keyframes cg-ringOut {
+  0% { transform: scale(0.6); opacity: 0.9; }
+  100%{ transform: scale(2.4); opacity: 0; }
+}
+@keyframes cg-slideIn { from { opacity:0; transform: translateX(-8px);} to { opacity:1; transform:none;} }
+@keyframes cg-cotIn { from { opacity:0; transform: translateY(8px);} to {opacity:1; transform:none;} }
+@keyframes cg-dashFlow { to { stroke-dashoffset: -200; } }
+@keyframes cg-lineFlow {
+  0% { background-position: -200% 0; }
+  100%{ background-position: 200% 0; }
+}
+@keyframes cg-blink { 50% { opacity: 0; } }
+@keyframes cg-scaleIn { from { opacity:0; transform: scale(0.94);} to { opacity:1; transform: scale(1);} }
+
+.cg-fade-up { animation: cg-fadeUp .6s ease-out both; }
+.cg-live-pulse { animation: cg-livePulse 2.2s ease-out infinite; }
+.cg-red-pulse  { animation: cg-pulseRed  1.6s ease-out infinite; }
+.cg-slide-in { animation: cg-slideIn .35s ease-out both; }
+.cg-cot-in   { animation: cg-cotIn .4s ease-out both; }
+.cg-scale-in { animation: cg-scaleIn .35s cubic-bezier(.2,.9,.3,1.2) both; }
+.cg-blink::after { content:'▌'; margin-left:2px; animation: cg-blink 1.05s steps(1) infinite; }
+
+.cg-reveal { opacity: 0; transform: translateY(18px); transition: opacity .7s ease, transform .7s cubic-bezier(.2,.7,.2,1); }
+.cg-reveal.in { opacity: 1; transform: none; }
+
+/* Map markers */
+.cg-marker {
+  width:40px;height:40px;border-radius:10px;display:flex;align-items:center;justify-content:center;
+  color:#fff; font-weight:700; position:relative;
+  box-shadow: 0 4px 16px hsl(0 0% 0% / 0.45);
+  border:2px solid hsl(0 0% 100% / 0.85);
+}
+.cg-marker .cg-marker-label {
+  position:absolute; top:42px; left:50%; transform:translateX(-50%);
+  font-family: 'DM Mono', monospace; font-size: 9px; letter-spacing:.04em;
+  background: hsl(0 0% 5% / 0.78); color:#fff; padding:2px 5px; border-radius:4px; white-space:nowrap;
+}
+.cg-marker .cg-ring {
+  position:absolute; inset:-4px; border-radius:14px; border:2px solid hsl(var(--red));
+  animation: cg-ringOut 1.6s ease-out infinite; pointer-events:none;
+}
+.cg-marker .cg-ring.delay { animation-delay: .65s; }
+
+.cg-mk-healthy   { background: hsl(var(--green)); }
+.cg-mk-degraded  { background: hsl(var(--amber)); }
+.cg-mk-critical  { background: hsl(var(--red)); }
+.cg-mk-repair    { background: hsl(var(--accent)); }
+.cg-mk-isolated  { background: hsl(0 0% 35%); }
+.cg-mk-operational { background: hsl(var(--accent)); }
+
+/* Leaflet dark cosmetic */
+.leaflet-container { background: #0d0f12 !important; font-family: 'DM Sans', sans-serif; }
+.leaflet-control-attribution { background: hsl(0 0% 0% / 0.5) !important; color: hsl(0 0% 80%) !important; }
+.leaflet-control-attribution a { color: hsl(0 0% 90%) !important; }
+/* Keep Leaflet panes (default z-index 200-700) below modals/navbar */
+.leaflet-pane,
+.leaflet-top,
+.leaflet-bottom { z-index: 1 !important; }
+.leaflet-control-container { z-index: 2 !important; }
+
+/* Edges */
+.cg-edge-base    { stroke: hsl(0 0% 100% / 0.35); stroke-dasharray: 4 6; }
+.cg-edge-cascade { stroke: hsl(var(--red)); stroke-dasharray: 8 6; animation: cg-dashFlow 1.2s linear infinite; filter: drop-shadow(0 0 4px hsl(var(--red) / .8)); }
+.cg-edge-reroute { stroke: hsl(var(--accent-2)); stroke-dasharray: 6 6; animation: cg-dashFlow 1.6s linear infinite; }
+.cg-edge-isolate { stroke: hsl(var(--accent)); stroke-dasharray: 2 8; }
+
+.cg-line-flow {
+  background: linear-gradient(90deg, transparent, hsl(0 0% 0% / .2), transparent);
+  background-size: 200% 100%;
+  animation: cg-lineFlow 2.4s linear infinite;
+}
+
+/* Scrollbar minimal */
+.cg-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+.cg-scroll::-webkit-scrollbar-thumb { background: hsl(0 0% 0% / .15); border-radius: 8px; }
+.cg-scroll-dark::-webkit-scrollbar-thumb { background: hsl(0 0% 100% / .15); }

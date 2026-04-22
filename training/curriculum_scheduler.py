@@ -20,13 +20,36 @@ from typing import Deque, List
 
 # ── Curriculum definition ──────────────────────────────────────────────────────
 # (task_id, graduate_threshold, min_episodes_before_graduation)
+#
+# Phase 1 — Mumbai fictional topology (ordered easy → hard)
+# Phase 2 — Real-world OSM city topologies (ordered by graph complexity)
+#            The agent graduates Phase 1 first, then faces real city graphs.
 CURRICULUM_STAGES: List[tuple] = [
-    ("task_easy",         0.75, 10),
-    ("task_gen_blackout", 0.65, 10),
-    ("task_medium",       0.55, 15),
-    ("task_hard",         0.50, 20),
-    ("task_cyberattack",  0.45, 20),
+    # Phase 1: Mumbai-based fictional topology
+    ("task_easy",            0.75, 10),
+    ("task_gen_blackout",    0.65, 10),
+    ("task_medium",          0.55, 15),
+    ("task_hard",            0.50, 20),
+    ("task_cyberattack",     0.45, 20),
+    # Phase 2: Real-world OSM city topologies
+    # Only loaded if data/real_nodes.json exists (graceful degradation)
+    ("task_osm_london",      0.45, 15),   # starts with London (manageable topology)
+    ("task_osm_bangalore",   0.42, 15),   # Bangalore: well-connected grid
+    ("task_osm_delhi",       0.40, 15),   # Delhi: dense urban graph
+    ("task_osm_mumbai",      0.40, 15),   # Mumbai: familiar sector names, real coords
+    ("task_osm_nyc",         0.38, 20),   # NYC: most complex inter-borough topology
+    ("task_osm_tokyo",       0.38, 20),   # Tokyo: dense metro, hardest real-world task
 ]
+
+# Filter to tasks that are actually registered (OSM tasks need real_nodes.json)
+def _available_stages() -> List[tuple]:
+    try:
+        from cascade_guard.tasks import TASK_CONFIGS
+        return [(tid, th, me) for tid, th, me in CURRICULUM_STAGES if tid in TASK_CONFIGS]
+    except Exception:
+        return [(tid, th, me) for tid, th, me in CURRICULUM_STAGES
+                if not tid.startswith("task_osm")]
+
 
 
 @dataclass
@@ -65,9 +88,16 @@ class CurriculumScheduler:
     def __init__(self) -> None:
         self._stages: List[StageStats] = [
             StageStats(task_id=t, threshold=th, min_episodes=me)
-            for t, th, me in CURRICULUM_STAGES
+            for t, th, me in _available_stages()
         ]
         self._stage_idx: int = 0
+        total = len(self._stages)
+        phase1 = sum(1 for s in self._stages if not s.task_id.startswith("task_osm"))
+        phase2 = total - phase1
+        print(
+            f"[Curriculum] Loaded {total} stages "
+            f"(Phase 1: {phase1} base tasks, Phase 2: {phase2} real-world OSM cities)"
+        )
 
     # ── Properties ────────────────────────────────────────────────────────────
 

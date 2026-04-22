@@ -1,0 +1,1160 @@
+{
+  "london": {
+    "nodes": [
+      {
+        "id": "SUB_CITY",
+        "lat": 51.5074,
+        "lng": -0.1278,
+        "sector": "power",
+        "name": "City of London Substation",
+        "osm_id": null,
+        "service_radius_km": 35.0
+      },
+      {
+        "id": "SUB_STEPNEY",
+        "lat": 51.52,
+        "lng": -0.09,
+        "sector": "power",
+        "name": "Stepney Substation",
+        "osm_id": null,
+        "service_radius_km": 35.0
+      },
+      {
+        "id": "GEN_BATTERSEA",
+        "lat": 51.49,
+        "lng": -0.14,
+        "sector": "power",
+        "name": "Battersea Power Station",
+        "osm_id": null,
+        "service_radius_km": 35.0
+      },
+      {
+        "id": "PUMP_THAMES",
+        "lat": 51.501,
+        "lng": -0.1195,
+        "sector": "water",
+        "name": "Thames Water Pump Station",
+        "osm_id": null,
+        "service_radius_km": 20.0
+      },
+      {
+        "id": "PUMP_LEA",
+        "lat": 51.515,
+        "lng": -0.08,
+        "sector": "water",
+        "name": "Lea Valley Pump Station",
+        "osm_id": null,
+        "service_radius_km": 20.0
+      },
+      {
+        "id": "WTWR_STREATHAM",
+        "lat": 51.4836,
+        "lng": -0.1276,
+        "sector": "water",
+        "name": "Streatham Water Tower",
+        "osm_id": null,
+        "service_radius_km": 20.0
+      },
+      {
+        "id": "HOSP_KINGS",
+        "lat": 51.4877,
+        "lng": -0.1174,
+        "sector": "hospital",
+        "name": "Kings College Hospital",
+        "osm_id": null,
+        "service_radius_km": 8.0
+      },
+      {
+        "id": "HOSP_ST_THOMAS",
+        "lat": 51.4989,
+        "lng": -0.1187,
+        "sector": "hospital",
+        "name": "St Thomas Hospital",
+        "osm_id": null,
+        "service_radius_km": 8.0
+      },
+      {
+        "id": "HOSP_ROYAL_LONDON",
+        "lat": 51.5229,
+        "lng": -0.0754,
+        "sector": "hospital",
+        "name": "Royal London Hospital",
+        "osm_id": null,
+        "service_radius_km": 8.0
+      },
+      {
+        "id": "HOSP_WHITECHAPEL",
+        "lat": 51.5246,
+        "lng": -0.0834,
+        "sector": "hospital",
+        "name": "Whitechapel Medical Centre",
+        "osm_id": null,
+        "service_radius_km": 8.0
+      },
+      {
+        "id": "MAST_BT_TOWER",
+        "lat": 51.513,
+        "lng": -0.11,
+        "sector": "telecom",
+        "name": "BT Tower",
+        "osm_id": null,
+        "service_radius_km": 100.0
+      },
+      {
+        "id": "TWR_CANARY",
+        "lat": 51.5,
+        "lng": -0.085,
+        "sector": "telecom",
+        "name": "Canary Wharf Tower",
+        "osm_id": null,
+        "service_radius_km": 100.0
+      },
+      {
+        "id": "AI_CORE",
+        "lat": 51.505342,
+        "lng": -0.106233,
+        "sector": "ai",
+        "name": "CascadeGuard AI Core",
+        "osm_id": null,
+        "service_radius_km": 5.0
+      }
+    ],
+    "edges": [
+      [
+        "SUB_CITY",
+        "SUB_STEPNEY"
+      ],
+      [
+        "PUMP_LEA",
+        "WTWR_STREATHAM"
+      ],
+      [
+        "AI_CORE",
+        "MAST_BT_TOWER"
+      ],
+      [
+        "SUB_CITY",
+        "GEN_BATTERSEA"
+      ],
+      [
+        "HOSP_KINGS",
+        "HOSP_ST_THOMAS"
+      ],
+      [
+        "SUB_CITY",
+        "MAST_BT_TOWER"
+      ],
+      [
+        "PUMP_THAMES",
+        "PUMP_LEA"
+      ],
+      [
+        "AI_CORE",
+        "HOSP_KINGS"
+      ],
+      [
+        "SUB_STEPNEY",
+        "GEN_BATTERSEA"
+      ],
+      [
+        "SUB_CITY",
+        "HOSP_KINGS"
+      ],
+      [
+        "MAST_BT_TOWER",
+        "TWR_CANARY"
+      ],
+      [
+        "SUB_CITY",
+        "AI_CORE"
+      ],
+      [
+        "AI_CORE",
+        "PUMP_THAMES"
+      ],
+      [
+        "SUB_CITY",
+        "PUMP_THAMES"
+      ],
+      [
+        "HOSP_ST_THOMAS",
+        "HOSP_ROYAL_LONDON"
+      ],
+      [
+        "HOSP_ROYAL_LONDON",
+        "HOSP_WHITECHAPEL"
+      ]
+    ],
+    "center": [
+      51.506,
+      -0.109
+    ],
+    "node_count": 13,
+    "edge_count": 16
+  },
+  "mumbai": {
+    "nodes": [
+      {
+        "id": "SUB_DHARAVI",
+        "lat": 19.076,
+        "lng": 72.8777,
+        "sector": "power",
+        "name": "Dharavi Substation",
+        "osm_id": null,
+        "service_radius_km": 35.0
+      },
+      {
+        "id": "SUB_BANDRA",
+        "lat": 19.12,
+        "lng": 72.84,
+        "sector": "power",
+        "name": "Bandra Substation",
+        "osm_id": null,
+        "service_radius_km": 35.0
+      },
+      {
+        "id": "GEN_TROMBAY",
+        "lat": 19.0553,
+        "lng": 72.9036,
+        "sector": "power",
+        "name": "Tata Power Trombay Plant",
+        "osm_id": null,
+        "service_radius_km": 35.0
+      },
+      {
+        "id": "PUMP_WORLI",
+        "lat": 19.065,
+        "lng": 72.835,
+        "sector": "water",
+        "name": "Worli Pumping Station",
+        "osm_id": null,
+        "service_radius_km": 20.0
+      },
+      {
+        "id": "PUMP_MATUNGA",
+        "lat": 19.105,
+        "lng": 72.87,
+        "sector": "water",
+        "name": "Matunga Pump Station",
+        "osm_id": null,
+        "service_radius_km": 20.0
+      },
+      {
+        "id": "WTWR_SION",
+        "lat": 19.08,
+        "lng": 72.855,
+        "sector": "water",
+        "name": "Sion Water Tower",
+        "osm_id": null,
+        "service_radius_km": 20.0
+      },
+      {
+        "id": "HOSP_KEM",
+        "lat": 19.0012,
+        "lng": 72.8402,
+        "sector": "hospital",
+        "name": "KEM Hospital Parel",
+        "osm_id": null,
+        "service_radius_km": 8.0
+      },
+      {
+        "id": "HOSP_SION",
+        "lat": 19.0406,
+        "lng": 72.8696,
+        "sector": "hospital",
+        "name": "Sion Municipal Hospital",
+        "osm_id": null,
+        "service_radius_km": 8.0
+      },
+      {
+        "id": "HOSP_NAIR",
+        "lat": 19.0019,
+        "lng": 72.8337,
+        "sector": "hospital",
+        "name": "Nair Hospital",
+        "osm_id": null,
+        "service_radius_km": 8.0
+      },
+      {
+        "id": "HOSP_THANE",
+        "lat": 19.18,
+        "lng": 72.96,
+        "sector": "hospital",
+        "name": "Thane Civil Hospital",
+        "osm_id": null,
+        "service_radius_km": 8.0
+      },
+      {
+        "id": "MAST_BANDRA",
+        "lat": 19.1,
+        "lng": 72.82,
+        "sector": "telecom",
+        "name": "Bandra Telecom Mast",
+        "osm_id": null,
+        "service_radius_km": 100.0
+      },
+      {
+        "id": "TWR_SOUTH",
+        "lat": 19.05,
+        "lng": 72.9,
+        "sector": "telecom",
+        "name": "South Mumbai Relay Tower",
+        "osm_id": null,
+        "service_radius_km": 100.0
+      },
+      {
+        "id": "AI_CORE",
+        "lat": 19.072917,
+        "lng": 72.867067,
+        "sector": "ai",
+        "name": "CascadeGuard AI Core",
+        "osm_id": null,
+        "service_radius_km": 5.0
+      }
+    ],
+    "edges": [
+      [
+        "PUMP_WORLI",
+        "PUMP_MATUNGA"
+      ],
+      [
+        "HOSP_NAIR",
+        "HOSP_THANE"
+      ],
+      [
+        "MAST_BANDRA",
+        "TWR_SOUTH"
+      ],
+      [
+        "AI_CORE",
+        "PUMP_WORLI"
+      ],
+      [
+        "HOSP_KEM",
+        "HOSP_SION"
+      ],
+      [
+        "SUB_DHARAVI",
+        "AI_CORE"
+      ],
+      [
+        "HOSP_SION",
+        "HOSP_NAIR"
+      ],
+      [
+        "SUB_DHARAVI",
+        "GEN_TROMBAY"
+      ],
+      [
+        "SUB_DHARAVI",
+        "MAST_BANDRA"
+      ],
+      [
+        "SUB_DHARAVI",
+        "HOSP_KEM"
+      ],
+      [
+        "SUB_BANDRA",
+        "GEN_TROMBAY"
+      ],
+      [
+        "SUB_DHARAVI",
+        "SUB_BANDRA"
+      ],
+      [
+        "SUB_DHARAVI",
+        "PUMP_WORLI"
+      ],
+      [
+        "AI_CORE",
+        "MAST_BANDRA"
+      ],
+      [
+        "PUMP_MATUNGA",
+        "WTWR_SION"
+      ],
+      [
+        "AI_CORE",
+        "HOSP_KEM"
+      ]
+    ],
+    "center": [
+      19.076,
+      72.877
+    ],
+    "node_count": 13,
+    "edge_count": 16
+  },
+  "bangalore": {
+    "nodes": [
+      {
+        "id": "SUB_CENTRAL",
+        "lat": 12.9716,
+        "lng": 77.5946,
+        "sector": "power",
+        "name": "Central Substation",
+        "osm_id": null,
+        "service_radius_km": 35.0
+      },
+      {
+        "id": "SUB_NORTH",
+        "lat": 13.02,
+        "lng": 77.59,
+        "sector": "power",
+        "name": "North Bangalore Substation",
+        "osm_id": null,
+        "service_radius_km": 35.0
+      },
+      {
+        "id": "GEN_SOUTH",
+        "lat": 12.95,
+        "lng": 77.58,
+        "sector": "power",
+        "name": "Southern Power Generator",
+        "osm_id": null,
+        "service_radius_km": 35.0
+      },
+      {
+        "id": "PUMP_CAUVERY",
+        "lat": 12.96,
+        "lng": 77.57,
+        "sector": "water",
+        "name": "Cauvery Pump Station",
+        "osm_id": null,
+        "service_radius_km": 20.0
+      },
+      {
+        "id": "PUMP_EAST",
+        "lat": 12.99,
+        "lng": 77.61,
+        "sector": "water",
+        "name": "East Pump Station",
+        "osm_id": null,
+        "service_radius_km": 20.0
+      },
+      {
+        "id": "WTWR_MG",
+        "lat": 12.98,
+        "lng": 77.58,
+        "sector": "water",
+        "name": "MG Road Water Tower",
+        "osm_id": null,
+        "service_radius_km": 20.0
+      },
+      {
+        "id": "HOSP_VICTORIA",
+        "lat": 12.9698,
+        "lng": 77.6064,
+        "sector": "hospital",
+        "name": "Victoria Hospital",
+        "osm_id": null,
+        "service_radius_km": 8.0
+      },
+      {
+        "id": "HOSP_NIMHANS",
+        "lat": 12.995,
+        "lng": 77.571,
+        "sector": "hospital",
+        "name": "NIMHANS Hospital",
+        "osm_id": null,
+        "service_radius_km": 8.0
+      },
+      {
+        "id": "HOSP_NORTH",
+        "lat": 13.01,
+        "lng": 77.55,
+        "sector": "hospital",
+        "name": "North Bangalore Hospital",
+        "osm_id": null,
+        "service_radius_km": 8.0
+      },
+      {
+        "id": "HOSP_SOUTH",
+        "lat": 12.93,
+        "lng": 77.62,
+        "sector": "hospital",
+        "name": "South Bangalore Hospital",
+        "osm_id": null,
+        "service_radius_km": 8.0
+      },
+      {
+        "id": "MAST_INDIRA",
+        "lat": 12.98,
+        "lng": 77.55,
+        "sector": "telecom",
+        "name": "Indiranagar Telecom Mast",
+        "osm_id": null,
+        "service_radius_km": 100.0
+      },
+      {
+        "id": "TWR_KORAMANGALA",
+        "lat": 12.96,
+        "lng": 77.64,
+        "sector": "telecom",
+        "name": "Koramangala Tower",
+        "osm_id": null,
+        "service_radius_km": 100.0
+      },
+      {
+        "id": "AI_CORE",
+        "lat": 12.976367,
+        "lng": 77.5885,
+        "sector": "ai",
+        "name": "CascadeGuard AI Core",
+        "osm_id": null,
+        "service_radius_km": 5.0
+      }
+    ],
+    "edges": [
+      [
+        "SUB_CENTRAL",
+        "PUMP_CAUVERY"
+      ],
+      [
+        "SUB_CENTRAL",
+        "HOSP_VICTORIA"
+      ],
+      [
+        "PUMP_CAUVERY",
+        "PUMP_EAST"
+      ],
+      [
+        "HOSP_NIMHANS",
+        "HOSP_NORTH"
+      ],
+      [
+        "AI_CORE",
+        "HOSP_VICTORIA"
+      ],
+      [
+        "AI_CORE",
+        "PUMP_CAUVERY"
+      ],
+      [
+        "SUB_CENTRAL",
+        "AI_CORE"
+      ],
+      [
+        "SUB_CENTRAL",
+        "MAST_INDIRA"
+      ],
+      [
+        "AI_CORE",
+        "MAST_INDIRA"
+      ],
+      [
+        "HOSP_VICTORIA",
+        "HOSP_NIMHANS"
+      ],
+      [
+        "SUB_CENTRAL",
+        "SUB_NORTH"
+      ],
+      [
+        "SUB_CENTRAL",
+        "GEN_SOUTH"
+      ],
+      [
+        "SUB_NORTH",
+        "GEN_SOUTH"
+      ],
+      [
+        "MAST_INDIRA",
+        "TWR_KORAMANGALA"
+      ],
+      [
+        "HOSP_NORTH",
+        "HOSP_SOUTH"
+      ],
+      [
+        "PUMP_EAST",
+        "WTWR_MG"
+      ]
+    ],
+    "center": [
+      12.972,
+      77.594
+    ],
+    "node_count": 13,
+    "edge_count": 16
+  },
+  "delhi": {
+    "nodes": [
+      {
+        "id": "SUB_CONNAUGHT",
+        "lat": 28.6139,
+        "lng": 77.209,
+        "sector": "power",
+        "name": "Connaught Place Substation",
+        "osm_id": null,
+        "service_radius_km": 35.0
+      },
+      {
+        "id": "SUB_NORTH",
+        "lat": 28.68,
+        "lng": 77.22,
+        "sector": "power",
+        "name": "North Delhi Substation",
+        "osm_id": null,
+        "service_radius_km": 35.0
+      },
+      {
+        "id": "GEN_INDRA",
+        "lat": 28.55,
+        "lng": 77.2,
+        "sector": "power",
+        "name": "Indraprastha Power Plant",
+        "osm_id": null,
+        "service_radius_km": 35.0
+      },
+      {
+        "id": "PUMP_YAMUNA",
+        "lat": 28.6,
+        "lng": 77.18,
+        "sector": "water",
+        "name": "Yamuna Pump Station",
+        "osm_id": null,
+        "service_radius_km": 20.0
+      },
+      {
+        "id": "PUMP_EAST",
+        "lat": 28.65,
+        "lng": 77.25,
+        "sector": "water",
+        "name": "East Delhi Pump Station",
+        "osm_id": null,
+        "service_radius_km": 20.0
+      },
+      {
+        "id": "WTWR_CENTRAL",
+        "lat": 28.62,
+        "lng": 77.2,
+        "sector": "water",
+        "name": "Central Water Tower",
+        "osm_id": null,
+        "service_radius_km": 20.0
+      },
+      {
+        "id": "HOSP_AIIMS",
+        "lat": 28.64,
+        "lng": 77.2,
+        "sector": "hospital",
+        "name": "AIIMS New Delhi",
+        "osm_id": null,
+        "service_radius_km": 8.0
+      },
+      {
+        "id": "HOSP_SAFDAR",
+        "lat": 28.6517,
+        "lng": 77.2219,
+        "sector": "hospital",
+        "name": "Safdarjung Hospital",
+        "osm_id": null,
+        "service_radius_km": 8.0
+      },
+      {
+        "id": "HOSP_GTB",
+        "lat": 28.675,
+        "lng": 77.22,
+        "sector": "hospital",
+        "name": "GTB Hospital",
+        "osm_id": null,
+        "service_radius_km": 8.0
+      },
+      {
+        "id": "HOSP_SOUTH",
+        "lat": 28.59,
+        "lng": 77.21,
+        "sector": "hospital",
+        "name": "South Delhi Hospital",
+        "osm_id": null,
+        "service_radius_km": 8.0
+      },
+      {
+        "id": "MAST_CP",
+        "lat": 28.63,
+        "lng": 77.21,
+        "sector": "telecom",
+        "name": "Connaught Place Mast",
+        "osm_id": null,
+        "service_radius_km": 100.0
+      },
+      {
+        "id": "TWR_NORTH",
+        "lat": 28.66,
+        "lng": 77.23,
+        "sector": "telecom",
+        "name": "North Delhi Tower",
+        "osm_id": null,
+        "service_radius_km": 100.0
+      },
+      {
+        "id": "AI_CORE",
+        "lat": 28.63005,
+        "lng": 77.212575,
+        "sector": "ai",
+        "name": "CascadeGuard AI Core",
+        "osm_id": null,
+        "service_radius_km": 5.0
+      }
+    ],
+    "edges": [
+      [
+        "SUB_CONNAUGHT",
+        "GEN_INDRA"
+      ],
+      [
+        "SUB_NORTH",
+        "GEN_INDRA"
+      ],
+      [
+        "SUB_CONNAUGHT",
+        "AI_CORE"
+      ],
+      [
+        "HOSP_AIIMS",
+        "HOSP_SAFDAR"
+      ],
+      [
+        "PUMP_YAMUNA",
+        "PUMP_EAST"
+      ],
+      [
+        "AI_CORE",
+        "PUMP_YAMUNA"
+      ],
+      [
+        "SUB_CONNAUGHT",
+        "MAST_CP"
+      ],
+      [
+        "HOSP_GTB",
+        "HOSP_SOUTH"
+      ],
+      [
+        "SUB_CONNAUGHT",
+        "HOSP_AIIMS"
+      ],
+      [
+        "PUMP_EAST",
+        "WTWR_CENTRAL"
+      ],
+      [
+        "SUB_CONNAUGHT",
+        "SUB_NORTH"
+      ],
+      [
+        "MAST_CP",
+        "TWR_NORTH"
+      ],
+      [
+        "HOSP_SAFDAR",
+        "HOSP_GTB"
+      ],
+      [
+        "AI_CORE",
+        "MAST_CP"
+      ],
+      [
+        "SUB_CONNAUGHT",
+        "PUMP_YAMUNA"
+      ],
+      [
+        "AI_CORE",
+        "HOSP_AIIMS"
+      ]
+    ],
+    "center": [
+      28.644,
+      77.216
+    ],
+    "node_count": 13,
+    "edge_count": 16
+  },
+  "nyc": {
+    "nodes": [
+      {
+        "id": "SUB_MANHATTAN",
+        "lat": 40.7128,
+        "lng": -74.006,
+        "sector": "power",
+        "name": "Manhattan Substation",
+        "osm_id": null,
+        "service_radius_km": 35.0
+      },
+      {
+        "id": "SUB_QUEENS",
+        "lat": 40.75,
+        "lng": -73.95,
+        "sector": "power",
+        "name": "Queens Substation",
+        "osm_id": null,
+        "service_radius_km": 35.0
+      },
+      {
+        "id": "GEN_BROOKLYN",
+        "lat": 40.68,
+        "lng": -73.95,
+        "sector": "power",
+        "name": "Brooklyn Generator",
+        "osm_id": null,
+        "service_radius_km": 35.0
+      },
+      {
+        "id": "PUMP_HUDSON",
+        "lat": 40.72,
+        "lng": -73.99,
+        "sector": "water",
+        "name": "Hudson River Pump Station",
+        "osm_id": null,
+        "service_radius_km": 20.0
+      },
+      {
+        "id": "PUMP_BRONX",
+        "lat": 40.74,
+        "lng": -73.93,
+        "sector": "water",
+        "name": "Bronx Pump Station",
+        "osm_id": null,
+        "service_radius_km": 20.0
+      },
+      {
+        "id": "WTWR_LOWER",
+        "lat": 40.705,
+        "lng": -74.015,
+        "sector": "water",
+        "name": "Lower Manhattan Tower",
+        "osm_id": null,
+        "service_radius_km": 20.0
+      },
+      {
+        "id": "HOSP_BELLEVUE",
+        "lat": 40.7635,
+        "lng": -73.954,
+        "sector": "hospital",
+        "name": "Bellevue Hospital",
+        "osm_id": null,
+        "service_radius_km": 8.0
+      },
+      {
+        "id": "HOSP_COLUMBIA",
+        "lat": 40.79,
+        "lng": -73.95,
+        "sector": "hospital",
+        "name": "Columbia Presbyterian",
+        "osm_id": null,
+        "service_radius_km": 8.0
+      },
+      {
+        "id": "HOSP_BROOKLYN",
+        "lat": 40.7,
+        "lng": -73.98,
+        "sector": "hospital",
+        "name": "Brooklyn Medical Center",
+        "osm_id": null,
+        "service_radius_km": 8.0
+      },
+      {
+        "id": "HOSP_QUEENS",
+        "lat": 40.73,
+        "lng": -73.94,
+        "sector": "hospital",
+        "name": "Queens Hospital Center",
+        "osm_id": null,
+        "service_radius_km": 8.0
+      },
+      {
+        "id": "MAST_EMPIRE",
+        "lat": 40.7484,
+        "lng": -73.9967,
+        "sector": "telecom",
+        "name": "Empire State Antenna",
+        "osm_id": null,
+        "service_radius_km": 100.0
+      },
+      {
+        "id": "TWR_LIBERTY",
+        "lat": 40.6892,
+        "lng": -74.0445,
+        "sector": "telecom",
+        "name": "Liberty Tower",
+        "osm_id": null,
+        "service_radius_km": 100.0
+      },
+      {
+        "id": "AI_CORE",
+        "lat": 40.727408,
+        "lng": -73.975517,
+        "sector": "ai",
+        "name": "CascadeGuard AI Core",
+        "osm_id": null,
+        "service_radius_km": 5.0
+      }
+    ],
+    "edges": [
+      [
+        "SUB_MANHATTAN",
+        "PUMP_HUDSON"
+      ],
+      [
+        "PUMP_HUDSON",
+        "PUMP_BRONX"
+      ],
+      [
+        "MAST_EMPIRE",
+        "TWR_LIBERTY"
+      ],
+      [
+        "HOSP_BELLEVUE",
+        "HOSP_COLUMBIA"
+      ],
+      [
+        "HOSP_BROOKLYN",
+        "HOSP_QUEENS"
+      ],
+      [
+        "AI_CORE",
+        "PUMP_HUDSON"
+      ],
+      [
+        "SUB_MANHATTAN",
+        "AI_CORE"
+      ],
+      [
+        "SUB_MANHATTAN",
+        "SUB_QUEENS"
+      ],
+      [
+        "HOSP_COLUMBIA",
+        "HOSP_BROOKLYN"
+      ],
+      [
+        "SUB_MANHATTAN",
+        "MAST_EMPIRE"
+      ],
+      [
+        "PUMP_BRONX",
+        "WTWR_LOWER"
+      ],
+      [
+        "AI_CORE",
+        "MAST_EMPIRE"
+      ],
+      [
+        "SUB_MANHATTAN",
+        "HOSP_BELLEVUE"
+      ],
+      [
+        "SUB_QUEENS",
+        "GEN_BROOKLYN"
+      ],
+      [
+        "SUB_MANHATTAN",
+        "GEN_BROOKLYN"
+      ],
+      [
+        "AI_CORE",
+        "HOSP_BELLEVUE"
+      ]
+    ],
+    "center": [
+      40.712,
+      -74.006
+    ],
+    "node_count": 13,
+    "edge_count": 16
+  },
+  "tokyo": {
+    "nodes": [
+      {
+        "id": "SUB_SHIBUYA",
+        "lat": 35.6762,
+        "lng": 139.6503,
+        "sector": "power",
+        "name": "Shibuya Substation",
+        "osm_id": null,
+        "service_radius_km": 35.0
+      },
+      {
+        "id": "SUB_UENO",
+        "lat": 35.709,
+        "lng": 139.732,
+        "sector": "power",
+        "name": "Ueno Substation",
+        "osm_id": null,
+        "service_radius_km": 35.0
+      },
+      {
+        "id": "GEN_SHINAGAWA",
+        "lat": 35.65,
+        "lng": 139.75,
+        "sector": "power",
+        "name": "Shinagawa Power Station",
+        "osm_id": null,
+        "service_radius_km": 35.0
+      },
+      {
+        "id": "PUMP_SUMIDA",
+        "lat": 35.67,
+        "lng": 139.71,
+        "sector": "water",
+        "name": "Sumida River Pump Station",
+        "osm_id": null,
+        "service_radius_km": 20.0
+      },
+      {
+        "id": "PUMP_ARAKAWA",
+        "lat": 35.7,
+        "lng": 139.77,
+        "sector": "water",
+        "name": "Arakawa Pump Station",
+        "osm_id": null,
+        "service_radius_km": 20.0
+      },
+      {
+        "id": "WTWR_SHINJUKU",
+        "lat": 35.68,
+        "lng": 139.74,
+        "sector": "water",
+        "name": "Shinjuku Water Tower",
+        "osm_id": null,
+        "service_radius_km": 20.0
+      },
+      {
+        "id": "HOSP_TOKYO_U",
+        "lat": 35.7023,
+        "lng": 139.7731,
+        "sector": "hospital",
+        "name": "Tokyo University Hospital",
+        "osm_id": null,
+        "service_radius_km": 8.0
+      },
+      {
+        "id": "HOSP_KEIO",
+        "lat": 35.6894,
+        "lng": 139.6917,
+        "sector": "hospital",
+        "name": "Keio University Hospital",
+        "osm_id": null,
+        "service_radius_km": 8.0
+      },
+      {
+        "id": "HOSP_JIKEI",
+        "lat": 35.72,
+        "lng": 139.75,
+        "sector": "hospital",
+        "name": "Jikei University Hospital",
+        "osm_id": null,
+        "service_radius_km": 8.0
+      },
+      {
+        "id": "HOSP_SHOWA",
+        "lat": 35.66,
+        "lng": 139.73,
+        "sector": "hospital",
+        "name": "Showa University Hospital",
+        "osm_id": null,
+        "service_radius_km": 8.0
+      },
+      {
+        "id": "MAST_TOKYO",
+        "lat": 35.6586,
+        "lng": 139.7454,
+        "sector": "telecom",
+        "name": "Tokyo Tower",
+        "osm_id": null,
+        "service_radius_km": 100.0
+      },
+      {
+        "id": "TWR_SKYTREE",
+        "lat": 35.7101,
+        "lng": 139.8107,
+        "sector": "telecom",
+        "name": "Tokyo Skytree",
+        "osm_id": null,
+        "service_radius_km": 100.0
+      },
+      {
+        "id": "AI_CORE",
+        "lat": 35.685467,
+        "lng": 139.737767,
+        "sector": "ai",
+        "name": "CascadeGuard AI Core",
+        "osm_id": null,
+        "service_radius_km": 5.0
+      }
+    ],
+    "edges": [
+      [
+        "SUB_UENO",
+        "GEN_SHINAGAWA"
+      ],
+      [
+        "SUB_SHIBUYA",
+        "PUMP_SUMIDA"
+      ],
+      [
+        "SUB_SHIBUYA",
+        "MAST_TOKYO"
+      ],
+      [
+        "SUB_SHIBUYA",
+        "GEN_SHINAGAWA"
+      ],
+      [
+        "SUB_SHIBUYA",
+        "AI_CORE"
+      ],
+      [
+        "HOSP_TOKYO_U",
+        "HOSP_KEIO"
+      ],
+      [
+        "HOSP_JIKEI",
+        "HOSP_SHOWA"
+      ],
+      [
+        "MAST_TOKYO",
+        "TWR_SKYTREE"
+      ],
+      [
+        "AI_CORE",
+        "HOSP_TOKYO_U"
+      ],
+      [
+        "PUMP_SUMIDA",
+        "PUMP_ARAKAWA"
+      ],
+      [
+        "AI_CORE",
+        "MAST_TOKYO"
+      ],
+      [
+        "HOSP_KEIO",
+        "HOSP_JIKEI"
+      ],
+      [
+        "AI_CORE",
+        "PUMP_SUMIDA"
+      ],
+      [
+        "PUMP_ARAKAWA",
+        "WTWR_SHINJUKU"
+      ],
+      [
+        "SUB_SHIBUYA",
+        "HOSP_TOKYO_U"
+      ],
+      [
+        "SUB_SHIBUYA",
+        "SUB_UENO"
+      ]
+    ],
+    "center": [
+      35.682,
+      139.769
+    ],
+    "node_count": 13,
+    "edge_count": 16
+  }
+}

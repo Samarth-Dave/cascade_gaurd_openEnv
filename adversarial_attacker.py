@@ -201,26 +201,190 @@ class HospitalTargetingAttacker(BaseAttacker):
 # ── Registry & factory ─────────────────────────────────────────────────────────
 
 ATTACKER_REGISTRY: Dict[str, type] = {
-    "random":     RandomAttacker,
-    "centrality": CentralityAttacker,
-    "hospital":   HospitalTargetingAttacker,
+    "random":      RandomAttacker,
+    "centrality":  CentralityAttacker,
+    "hospital":    HospitalTargetingAttacker,
+    "betweenness": None,  # set below after class definition
 }
 
 
-def make_attacker(name: str = "centrality", **kwargs) -> BaseAttacker:
+# ── Strategy 4: Real Betweenness Centrality Attacker ──────────────────────────
+
+class BetweennessCentralityAttacker(BaseAttacker):
+    """
+    Adversarial attacker that computes **real betweenness centrality** from the
+    live observation graph and targets the highest-centrality healthy node.
+
+    Betweenness centrality measures how often a node lies on the shortest path
+    between every other pair of nodes — high-betweenness nodes are the true
+    chokepoints of the infrastructure graph.
+
+    Unlike CentralityAttacker (degree proxy), this uses BFS across all node
+    pairs to compute exact normalized betweenness — identical to the formula
+    in CascadeEnvironment._compute_centrality().
+
+    Additional behaviours
+    ---------------------
+    - Backs off when cascade depth >= 2 (let existing cascade propagate).
+    - Escalates attack strength over time (step / 100 bonus).
+    - Only attacks nodes above a minimum centrality threshold (0.05).
+    - Exposes .think(obs, step) for UI chain-of-thought display.
+    """
+
+    def __init__(
+        self,
+        attack_strength: float = 0.15,
+        attack_every: int = 3,
+        min_centrality: float = 0.05,
+    ) -> None:
+        super().__init__(attack_strength)
+        self.attack_every     = attack_every
+        self.min_centrality   = min_centrality
+        self._history: List[str] = []   # previously attacked node IDs
+
+    # ── Betweenness centrality (BFS-based, same as env) ───────────────────────
+
+    def _compute_betweenness(self, obs) -> Dict[str, float]:
+        """Approximate betweenness centrality from the live observation graph."""
+        node_ids  = [n.node_id for n in obs.nodes]
+        adj: Dict[str, List[str]] = {nid: [] for nid in node_ids}
+        for e in obs.edges:
+            if e.source_id in adj and e.target_id in adj:
+                adj[e.source_id].append(e.target_id)
+                adj[e.target_id].append(e.source_id)
+
+        centrality: Dict[str, float] = {nid: 0.0 for nid in node_ids}
+        n = len(node_ids)
+
+        for source in node_ids:
+            # BFS from source
+            dist: Dict[str, int]       = {source: 0}
+            num_paths: Dict[str, int]  = {nid: 0 for nid in node_ids}
+            num_paths[source]          = 1
+            preds: Dict[str, List[str]] = {nid: [] for nid in node_ids}
+            queue: List[str]            = [source]
+
+            while queue:
+                v = queue.pop(0)
+                for w in adj[v]:
+                    if w not in dist:
+                        dist[w] = dist[v] + 1
+                        queue.append(w)
+                    if dist.get(w, -1) == dist[v] + 1:
+                        num_paths[w] += num_paths[v]
+                        preds[w].append(v)
+
+            dep: Dict[str, float] = {nid: 0.0 for nid in node_ids}
+            for w in sorted(dist, key=lambda x: -dist[x]):
+                for v in preds[w]:
+                    if num_paths[w] > 0:
+                        dep[v] += (num_paths[v] / num_paths[w]) * (1 + dep[w])
+                if w != source:
+                    centrality[w] += dep[w]
+
+        norm = max(1, (n - 1) * (n - 2))
+        return {nid: round(c / norm, 4) for nid, c in centrality.items()}
+
+    # ── Attack selection ───────────────────────────────────────────────────────
+
+    def select_attack(self, obs, step: int) -> Optional[Dict]:
+        # Back off if cascade is already spreading
+        cascade_depth = sum(
+            1 for n in obs.nodes if not n.is_operational
+        )
+        if cascade_depth >= 2:
+            return None
+
+        if step % self.attack_every != 0:
+            return None
+
+        centrality = self._compute_betweenness(obs)
+
+        candidates = [
+            n for n in obs.nodes
+            if n.is_operational
+            and not n.is_hardened
+            and n.node_id not in self._history
+            and centrality.get(n.node_id, 0.0) >= self.min_centrality
+        ]
+
+        if not candidates:
+            # Retry without history filter
+            candidates = [
+                n for n in obs.nodes
+                if n.is_operational and not n.is_hardened
+                and centrality.get(n.node_id, 0.0) >= self.min_centrality
+            ]
+
+        if not candidates:
+            return None
+
+        target = max(candidates, key=lambda n: centrality.get(n.node_id, 0.0))
+        self._history.append(target.node_id)
+
+        escalated = self.attack_strength + (step / 100.0)
+        return {
+            "type":    "equipment_fault",
+            "target":  target.node_id,
+            "effect":  -round(min(0.85, escalated), 3),
+        }
+
+    # ── Chain-of-thought for UI display ───────────────────────────────────────
+
+    def think(self, obs, step: int) -> str:
+        """
+        Returns attacker chain-of-thought text for the UI sidebar.
+        Shows real betweenness rankings and planned action.
+        """
+        centrality  = self._compute_betweenness(obs)
+        top_targets = sorted(
+            [(n.node_id, centrality.get(n.node_id, 0.0), n.sector)
+             for n in obs.nodes if n.is_operational],
+            key=lambda x: -x[1],
+        )[:4]
+
+        cascade_depth = sum(1 for n in obs.nodes if not n.is_operational)
+        budget_info   = getattr(obs, "budget_remaining", "?")
+
+        lines = [
+            f"[ATTACKER] Step {step} — Real betweenness centrality analysis",
+            f"Top targets: " + ", ".join(
+                f"{nid}={c:.3f}({s})" for nid, c, s in top_targets
+            ),
+            f"Cascade depth: {cascade_depth} | Defender budget: {budget_info}",
+        ]
+
+        attack = self.select_attack(obs, step)
+        if attack:
+            strength = abs(attack["effect"])
+            lines.append(
+                f"ACTION: INJECT {attack['target']} "
+                f"strength={strength:.3f} "
+                f"centrality={centrality.get(attack['target'], 0):.3f}"
+            )
+        else:
+            if cascade_depth >= 2:
+                lines.append("ACTION: HOLD — cascade already propagating (depth≥2)")
+            else:
+                lines.append("ACTION: HOLD — no viable high-centrality target")
+
+        return "\n".join(lines)
+
+
+# Update registry with betweenness attacker
+ATTACKER_REGISTRY["betweenness"] = BetweennessCentralityAttacker
+
+
+def make_attacker(name: str = "betweenness", **kwargs) -> BaseAttacker:
     """
     Factory function for attacker strategies.
 
     Args:
-        name:    One of "random", "centrality", "hospital".
-        **kwargs: Passed to the attacker constructor
-                  (attack_strength, attack_every).
+        name:    One of "random", "centrality", "hospital", "betweenness".
+        **kwargs: Passed to the attacker constructor.
 
     Returns:
         Instantiated attacker.
-
-    Raises:
-        KeyError: If name is not in ATTACKER_REGISTRY.
     """
     if name not in ATTACKER_REGISTRY:
         raise KeyError(

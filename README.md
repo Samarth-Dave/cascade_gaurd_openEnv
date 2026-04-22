@@ -40,13 +40,13 @@ cascade_gaurd_openEnv/
     README.md                 repo-side frontend documentation
 ```
 
-In this workspace, the current frontend source lives next to the repo in:
+The frontend source now lives inside this repository under:
 
 ```text
-../cascade-guard-core-main
+ui/
 ```
-
-That frontend is the active UI that replaced the old standalone HTML prototype.
+ 
+It is the active UI that replaced the old standalone HTML prototype.
 
 ## System Overview
 
@@ -199,10 +199,10 @@ If you already have the Python dependencies installed, you can go straight to ru
 
 ## Frontend Setup
 
-From the sibling frontend folder:
+From the repo root:
 
 ```powershell
-cd ..\cascade-guard-core-main
+cd ui
 npm.cmd install
 ```
 
@@ -228,9 +228,10 @@ http://localhost:8000
 
 ### Terminal 2 - frontend
 
-From `cascade-guard-core-main`:
+From `ui`:
 
 ```powershell
+cd ui
 npm.cmd run dev
 ```
 
@@ -291,7 +292,7 @@ This validates that the server accepts a `reset` and a `step` call on the WebSoc
 From the frontend folder:
 
 ```powershell
-cd ..\cascade-guard-core-main
+cd ui
 npm.cmd run build
 ```
 
@@ -321,7 +322,7 @@ The training code lives under `training/`. Use the notebook and training scripts
 
 ## Frontend Scripts
 
-From `../cascade-guard-core-main`:
+From `ui/`:
 
 - `npm.cmd run dev`
 - `npm.cmd run build`
@@ -373,5 +374,4 @@ pip install -e .
 ## Additional Docs
 
 - UI-specific docs: [ui/README.md](ui/README.md)
-- Workspace frontend docs: `../cascade-guard-core-main/README.md`
 - Run notes: [HOW_TO_RUN.md](HOW_TO_RUN.md)

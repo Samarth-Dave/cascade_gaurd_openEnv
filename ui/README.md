@@ -1,24 +1,17 @@
 # CascadeGuard UI
 
-This folder contains the repository copy of the frontend documentation for the `harsh` branch.
+This folder contains the actual Vite + React frontend for CascadeGuard.
 
-In this workspace, the actual Vite frontend source lives in the sibling folder:
-
-```text
-../cascade-guard-core-main
-```
-
-That frontend is the current UI for CascadeGuard. It replaces the old standalone HTML prototype and connects to the backend over:
+It replaces the old standalone HTML prototype and connects to the backend over:
 
 - `http://localhost:8000`
 - `ws://localhost:8000/ws`
 
 ## Run The UI Locally
 
-From the frontend project folder:
+From this `ui/` folder:
 
 ```powershell
-cd ..\cascade-guard-core-main
 npm.cmd install
 npm.cmd run dev
 ```
@@ -31,7 +24,7 @@ http://localhost:8080
 
 ## Run The Backend For Live Mode
 
-From this repo root:
+From the repo root:
 
 ```powershell
 python server/app.py
@@ -45,6 +38,7 @@ Then launch the frontend and confirm the connection banner switches from simulat
 - The frontend sends `step` messages for wait/dispatch actions.
 - Live observations are normalized into map, timeline, event feed, and reasoning panels.
 - If the backend is unavailable, the UI falls back to the scripted simulation.
+- In deployment, the backend serves the built `ui/dist` bundle directly.
 
 ## Main Documentation
 
