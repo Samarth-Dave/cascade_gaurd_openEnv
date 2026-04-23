@@ -8,7 +8,14 @@ from cascade_guard.models import CascadeAction
 from cascade_guard.server.graders import grade
 from inference import _build_user_prompt, SYSTEM_PROMPT, smart_heuristic
 
-for tid in ["task_easy", "task_medium", "task_hard", "task_gen_blackout", "task_cyberattack"]:
+for tid in [
+    "task_easy",
+    "task_medium",
+    "task_hard",
+    "task_gen_blackout",
+    "task_cyberattack",
+    "task_surge_demand",
+]:
     env = CascadeEnvironment()
     obs = env.reset(task_id=tid)
     print(f"{tid}: nodes={len(obs.nodes)} edges={len(obs.edges)} budget={obs.budget_remaining} steps={obs.max_steps}")
@@ -36,7 +43,15 @@ s2 = grade(
     budget_spent=4.0,
     budget_total=10.0,
 )
-print(f"grade_gen_blackout={s1}  grade_cyberattack={s2}")
+s3 = grade(
+    "task_surge_demand",
+    failure_history=[],
+    hospital_health_log=[1.0] * 5,
+    final_sector_summary={"power": 0.85, "water": 0.8, "hospital": 0.9},
+    budget_spent=3.0,
+    budget_total=9.0,
+)
+print(f"grade_gen_blackout={s1}  grade_cyberattack={s2}  grade_surge_demand={s3}")
 
 env2 = CascadeEnvironment()
 obs2 = env2.reset(task_id="task_easy")

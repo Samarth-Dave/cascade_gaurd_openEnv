@@ -18,7 +18,7 @@ Design contract
 from __future__ import annotations
 
 import math
-from typing import Dict, List, Set
+from typing import Dict, List, Optional, Set
 
 
 # ---------------------------------------------------------------------------
@@ -76,11 +76,15 @@ def _safe(value: float) -> float:
 def _hospital_maintained_score(hospital_health_log: List[float]) -> float:
     """
     Fraction of steps where hospital health stayed ≥ 0.4.
-    Empty log → perfect score (no data, no penalty).
+    Empty log → neutral 0.5 (no data, no opinion — agent neither helped nor hurt).
     All steps violated → SCORE_EPS (worst, never 0.0).
+
+    NOTE: Changed from returning _SCORE_HI on empty log. A passive agent that
+    never acts produces an empty hospital log — we should not reward that with
+    a perfect score. Neutral 0.5 is correct here.
     """
     if not hospital_health_log:
-        return _SCORE_HI
+        return _safe(0.5)  # neutral: no data means we don't know — don't reward
 
     total_steps = len(hospital_health_log)
     violations = sum(1 for h in hospital_health_log
@@ -115,10 +119,10 @@ def _cascade_contained_score(failure_history: List[Set[str]], total_nodes: int) 
 def _dependency_order_score(dependency_order_log: List[int]) -> float:
     """
     Fraction of recoveries performed in correct dependency order.
-    Empty log → neutral 0.5 (no data, no opinion).
+    Empty log → slightly-below-neutral 0.35 (agent did zero recoveries — no credit).
     """
     if not dependency_order_log:
-        return _safe(0.5)
+        return _safe(0.35)  # no recoveries attempted → below neutral, not penalised fully
 
     return _clamp(sum(dependency_order_log) / max(len(dependency_order_log), 1))
 
@@ -138,11 +142,15 @@ def _cascade_depth_score(cascade_depth_log: List[int], total_nodes: int) -> floa
 
 def _proactive_rate_score(action_history: List[str]) -> float:
     """
-    Blend of proactive-action rate and budget efficiency.
-    Empty history → neutral 0.5.
+    Fraction of steps where the agent took a non-wait action.
+    Empty history → 0.0 (worst — no actions taken at all means pure passivity).
+    100% wait → SCORE_EPS (near zero — pure passivity is the floor).
+
+    NOTE: Changed from neutral 0.5 on empty. A 0% active rate should score 0,
+    not 0.5. This is the primary lever that breaks the wait-attractor floor.
     """
     if not action_history:
-        return _safe(0.5)
+        return SCORE_EPS  # no history at all → worst possible proactive score
 
     active_actions = sum(1 for a in action_history if a != "wait")
     proactive_rate = active_actions / max(len(action_history), 1)   # in [0, 1]
@@ -158,6 +166,20 @@ def _budget_conservation_score(budget_spent: float, budget_total: float) -> floa
     if spend_ratio <= 0.70:
         return _SCORE_HI
     return _clamp(1.0 - (spend_ratio - 0.70) * 2.0)
+
+
+def _budget_efficiency_score(budget_spent: float, budget_total: float) -> float:
+    """
+    Reward useful budget usage to break the zero-spend fixed point.
+
+    Full credit is reached at 50% spend; 0 spend gets SCORE_EPS.
+    """
+    if budget_total <= 0:
+        return SCORE_EPS
+    if budget_spent <= 0:
+        return SCORE_EPS
+    ratio = min(float(budget_spent) / (0.5 * float(budget_total)), 1.0)
+    return _clamp(ratio)
 
 
 def _centrality_protection_score(
@@ -192,6 +214,22 @@ def _sacrifice_penalty(sacrifice_count: int) -> float:
     Returns a non-negative deduction (caller subtracts it).
     """
     return min(0.5, 0.1 * max(0, sacrifice_count))
+
+
+def _critical_failure_penalty(total_critical_failures: int) -> float:
+    """
+    Grader-side penalty for accumulated critical failures across the episode.
+    Each critical failure reduces the raw composite by 0.04, unbounded below.
+    Returns a non-negative deduction value (caller subtracts it).
+
+    This directly links CF accumulation (which step rewards penalise) to the
+    final grader score, eliminating the reward-score decoupling that caused
+    GRPO to optimise the wrong objective.
+
+    Example: 13 CFs (gen_blackout worst case) → -0.52 deduction.
+    A wait-only policy on gen_blackout (baseline 0.5 raw) → final ~0.01.
+    """
+    return 0.04 * max(0, total_critical_failures)
 
 
 def _cascade_contained_score_lockdown(
@@ -243,10 +281,11 @@ def grade_easy(
 ) -> float:
     """
     task_easy grader.
-    Weights: avg_health=0.35, no_blackout=0.35, cascade=0.20, depth=0.10   (sum=1.00)
+    Weights: avg_health=0.28, hosp=0.10, no_blackout=0.28, cascade=0.20, depth=0.14   (sum=1.00)
+    Proactive-action component added to penalise 100% wait policies.
     """
     if not final_sector_summary:
-        return _safe(0.5)
+        return _safe(0.15)  # no data → low score, not neutral 0.5
 
     avg = _clamp(
         sum(final_sector_summary.values()) / len(final_sector_summary)
@@ -257,8 +296,18 @@ def grade_easy(
     )
     cascade = kwargs.get("_adjusted_cascade_score") or _cascade_contained_score(failure_history, total_nodes)
     depth   = _cascade_depth_score(cascade_depth_log or [], total_nodes)
+    proactive = _proactive_rate_score(action_history or [])
+    budget_efficiency = _budget_efficiency_score(budget_spent, budget_total)
 
-    raw = 0.28 * avg + 0.10 * hosp + 0.28 * no_blackout + 0.20 * cascade + 0.14 * depth
+    raw = (
+        0.24 * avg
+        + 0.10 * hosp
+        + 0.20 * no_blackout
+        + 0.18 * cascade
+        + 0.10 * depth
+        + 0.08 * proactive
+        + 0.10 * budget_efficiency
+    )
     return _safe(raw)
 
 
@@ -276,24 +325,30 @@ def grade_medium(
 ) -> float:
     """
     task_medium grader.
-    Weights: avg=0.25, hosp=0.30, no_blackout=0.20, cascade=0.10, depth=0.10, dep_order=0.05   (sum=1.00)
+    Weights: avg=0.20, hosp=0.25, no_blackout=0.16, cascade=0.10,
+             depth=0.07, dep_order=0.05, proactive=0.09, budget_eff=0.08 (sum=1.00)
+    Proactive rate now a first-class component to break the wait-attractor floor.
     """
     if not final_sector_summary:
-        return _safe(0.5)
+        return _safe(0.15)  # no data → low score, not neutral 0.5
 
-    avg       = _clamp(sum(final_sector_summary.values()) / len(final_sector_summary))
-    hosp      = _hospital_maintained_score(hospital_health_log)
+    avg         = _clamp(sum(final_sector_summary.values()) / len(final_sector_summary))
+    hosp        = _hospital_maintained_score(hospital_health_log)
     no_blackout = _clamp(1.0 if all(v > 0.0 for v in final_sector_summary.values()) else 0.0)
-    cascade   = kwargs.get("_adjusted_cascade_score") or _cascade_contained_score(failure_history, total_nodes)
-    depth     = _cascade_depth_score(cascade_depth_log or [], total_nodes)
-    dep_order = _dependency_order_score(dependency_order_log or [])
+    cascade     = kwargs.get("_adjusted_cascade_score") or _cascade_contained_score(failure_history, total_nodes)
+    depth       = _cascade_depth_score(cascade_depth_log or [], total_nodes)
+    dep_order   = _dependency_order_score(dependency_order_log or [])
+    proactive   = _proactive_rate_score(action_history or [])
+    budget_efficiency = _budget_efficiency_score(budget_spent, budget_total)
 
-    raw = (0.25 * avg
-           + 0.30 * hosp
-           + 0.20 * no_blackout
-           + 0.10 * cascade
-           + 0.10 * depth
-           + 0.05 * dep_order)
+    raw = (0.20 * avg
+            + 0.25 * hosp
+            + 0.16 * no_blackout
+            + 0.10 * cascade
+            + 0.07 * depth
+            + 0.05 * dep_order
+            + 0.09 * proactive
+            + 0.08 * budget_efficiency)
     return _safe(raw)
 
 
@@ -359,10 +414,12 @@ def grade_gen_blackout(
     """
     task_gen_blackout grader.
     Root-generator cascade to hospitals — high hospital weight.
-    Weights: avg=0.20, hosp=0.35, no_blackout=0.20, cascade=0.10, depth=0.10, dep_order=0.05  (sum=1.00)
+    Weights: avg=0.16, hosp=0.30, no_blackout=0.16, cascade=0.10,
+             depth=0.09, dep_order=0.05, proactive=0.08, budget_eff=0.06 (sum=1.00)
+    Proactive component added so a generator-blackout passive agent scores near zero.
     """
     if not final_sector_summary:
-        return _safe(0.5)
+        return _safe(0.15)  # no data → low score, not neutral 0.5
 
     avg         = _clamp(sum(final_sector_summary.values()) / len(final_sector_summary))
     hosp        = _hospital_maintained_score(hospital_health_log)
@@ -370,13 +427,17 @@ def grade_gen_blackout(
     cascade     = kwargs.get("_adjusted_cascade_score") or _cascade_contained_score(failure_history, total_nodes)
     depth       = _cascade_depth_score(cascade_depth_log or [], total_nodes)
     dep_order   = _dependency_order_score(dependency_order_log or [])
+    proactive   = _proactive_rate_score(action_history or [])
+    budget_efficiency = _budget_efficiency_score(budget_spent, budget_total)
 
-    raw = (0.20 * avg
-           + 0.35 * hosp
-           + 0.20 * no_blackout
-           + 0.10 * cascade
-           + 0.10 * depth
-           + 0.05 * dep_order)
+    raw = (0.16 * avg
+            + 0.30 * hosp
+            + 0.16 * no_blackout
+            + 0.10 * cascade
+            + 0.09 * depth
+            + 0.05 * dep_order
+            + 0.08 * proactive
+            + 0.06 * budget_efficiency)
     return _safe(raw)
 
 
@@ -424,6 +485,42 @@ def grade_cyberattack(
            + 0.05 * dep_order
            + 0.04 * proactive
            + 0.05 * centrality)         # NEW weight  → sum = 1.00
+    return _safe(raw)
+
+
+def grade_surge_demand(
+    failure_history: List[Set[str]],
+    hospital_health_log: List[float],
+    final_sector_summary: Dict[str, float],
+    budget_spent: float,
+    budget_total: float,
+    total_nodes: int = 0,
+    cascade_depth_log: List[int] | None = None,
+    dependency_order_log: List[int] | None = None,
+    action_history: List[str] | None = None,
+    **kwargs,
+) -> float:
+    """
+    task_surge_demand grader.
+
+    Load-spike task with no direct equipment faults.
+    Weights: hospital_safety=0.45, cascade_contained=0.40, budget_efficiency=0.15
+    """
+    if not final_sector_summary:
+        return _safe(0.15)
+
+    hospital_safety = _hospital_maintained_score(hospital_health_log)
+    cascade_contained = kwargs.get("_adjusted_cascade_score") or _cascade_contained_score(
+        failure_history,
+        total_nodes,
+    )
+    budget_efficiency = _budget_efficiency_score(budget_spent, budget_total)
+
+    raw = (
+        0.45 * hospital_safety
+        + 0.40 * cascade_contained
+        + 0.15 * budget_efficiency
+    )
     return _safe(raw)
 
 
@@ -502,6 +599,7 @@ GRADERS = {
     "task_hard":         grade_hard,
     "task_gen_blackout": grade_gen_blackout,
     "task_cyberattack":  grade_cyberattack,
+    "task_surge_demand": grade_surge_demand,
     "task_real_city":    grade_real_city,
 }
 
@@ -520,7 +618,7 @@ def grade(task_id: str, uncapped: bool = False, **kwargs) -> float:
        future change to a grader cannot accidentally leak 0.0 or 1.0.
 
     Args:
-        task_id:  One of the 5 CascadeGuard task IDs.
+        task_id:  One of the registered CascadeGuard task IDs.
         uncapped: If True, returns the raw grader composite BEFORE the final
                   _safe() boundary clamp. This is the Mercor bonus sub-theme
                   (uncapped reward environments). The value is still passed
@@ -541,11 +639,17 @@ def grade(task_id: str, uncapped: bool = False, **kwargs) -> float:
     """
     if task_id not in GRADERS:
         # Unknown task — return neutral rather than crashing.
-        return _safe(0.5)
+        return _safe(0.15)  # no longer 0.5 — unknown task should not floor at neutral
 
     # v2.2: extract and strip v2.2-specific kwargs before passing to grader
     sacrifice_count: int = int(kwargs.pop("controlled_cascade_sacrifices", 0) or 0)
     lockdown_steps: List[int] = list(kwargs.pop("lockdown_steps", []) or [])
+
+    # Extract critical failure count for the CF penalty (passed in kwargs,
+    # does NOT get forwarded to the per-task grader functions).
+    # The caller (cascade_environment.py state property) accumulates this from
+    # the failure_history. We compute it here if not directly provided.
+    explicit_cf: Optional[int] = kwargs.pop("total_critical_failures", None)
 
     # v2.2: if lockdown steps exist, override the failure_history view for
     # cascade containment by replacing it with a lockdown-aware score injected
@@ -563,12 +667,27 @@ def grade(task_id: str, uncapped: bool = False, **kwargs) -> float:
         grader_func = GRADERS[task_id]
         raw = grader_func(**kwargs)
     except Exception:
-        # Any grader crash → neutral fallback, never 0.0 or 1.0.
-        return _safe(0.5)
+        # Any grader crash → low fallback, not neutral 0.5 (hidden attractor).
+        return _safe(0.10)
 
     # v2.2: apply controlled_cascade sacrifice penalty
     if sacrifice_count > 0:
         raw = _clamp(raw - _sacrifice_penalty(sacrifice_count))
+
+    # ── CRITICAL FIX: Apply accumulated critical-failure penalty ──────────────
+    # This closes the reward-score decoupling gap: the step reward already fires
+    # a per-CF penalty, but the final grader score previously ignored CF count
+    # entirely. Now both signals move in the same direction.
+    #
+    # If explicit_cf was passed, use it. Otherwise derive from failure_history.
+    if explicit_cf is None:
+        fh = kwargs.get("failure_history", [])
+        # Count total critical-node failures across the episode
+        # (approximate: we count each step a node was failed, summed)
+        explicit_cf = sum(len(s) for s in fh) if fh else 0
+    if explicit_cf > 0:
+        cf_deduction = _critical_failure_penalty(explicit_cf)
+        raw = max(SCORE_EPS, raw - cf_deduction)
 
     if uncapped:
         # Return raw composite (already through sub-scorer _clamp(), but NOT _safe())

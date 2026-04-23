@@ -108,10 +108,12 @@ del _imm, _t, _s, _make_stub
 
 # ── Standard library ─────────────────────────────────────────────────────
 import argparse
+from collections import Counter
 import json
 import logging
 import math
 import os
+import random
 import re
 import statistics
 import sys
@@ -200,8 +202,14 @@ def parse_args() -> argparse.Namespace:
 
     # Tasks
     p.add_argument("--tasks", nargs="+",
-                   default=["task_easy","task_medium","task_gen_blackout",
-                            "task_hard","task_cyberattack"],
+                   default=[
+                       "task_easy",
+                       "task_medium",
+                       "task_surge_demand",
+                       "task_gen_blackout",
+                       "task_hard",
+                       "task_cyberattack",
+                   ],
                    help="Task IDs to train on")
     p.add_argument("--eval-tasks", nargs="+", default=None,
                    help="Task IDs to evaluate on (default: same as --tasks)")
@@ -362,6 +370,86 @@ def make_heuristic_policy(CascadeAction):
     return heuristic_policy
 
 
+def make_training_sub_policies(CascadeAction, fallback_policy):
+    """Teacher sub-policies used for diverse state collection."""
+
+    def _node_degree(obs) -> Dict[str, int]:
+        degree: Dict[str, int] = {n.node_id: 0 for n in obs.nodes}
+        for e in obs.edges:
+            degree[e.source_id] = degree.get(e.source_id, 0) + 1
+            degree[e.target_id] = degree.get(e.target_id, 0) + 1
+        return degree
+
+    def proactive_hardener(obs):
+        if obs.budget_remaining >= 2.0 and obs.step < 4:
+            degree = _node_degree(obs)
+            candidates = [
+                n for n in obs.nodes if n.is_operational and not n.is_hardened
+            ]
+            if candidates:
+                candidates.sort(
+                    key=lambda n: (
+                        not n.is_critical,
+                        -degree.get(n.node_id, 0),
+                        n.health,
+                    )
+                )
+                return CascadeAction(
+                    action_type="harden",
+                    target_node_id=candidates[0].node_id,
+                )
+        return fallback_policy(obs)
+
+    def load_manager(obs):
+        overloaded = [
+            n
+            for n in obs.nodes
+            if n.is_operational
+            and not n.is_critical
+            and n.sector != "hospital"
+            and n.load > 0.80
+        ]
+        if overloaded:
+            overloaded.sort(key=lambda n: n.load, reverse=True)
+            return CascadeAction(
+                action_type="shed_load",
+                target_node_id=overloaded[0].node_id,
+            )
+
+        delayed = [n for n in obs.nodes if n.observation_delayed]
+        if delayed and obs.budget_remaining >= 1.0:
+            delayed.sort(key=lambda n: (not n.is_critical, n.health))
+            return CascadeAction(
+                action_type="coordinate",
+                target_node_id=delayed[0].node_id,
+            )
+        return fallback_policy(obs)
+
+    def recovery_prioritizer(obs):
+        diag = obs.diagnostics
+        if diag and diag.recommended_recovery_order:
+            return CascadeAction(
+                action_type="recover",
+                target_node_id=diag.recommended_recovery_order[0],
+            )
+
+        failed = [
+            n
+            for n in obs.nodes
+            if not n.is_operational and n.node_id not in set(obs.pending_recoveries)
+        ]
+        if failed:
+            failed.sort(key=lambda n: (not n.is_critical, n.health))
+            return CascadeAction(action_type="recover", target_node_id=failed[0].node_id)
+        return fallback_policy(obs)
+
+    return {
+        "proactive_hardener": proactive_hardener,
+        "load_manager": load_manager,
+        "recovery_prioritizer": recovery_prioritizer,
+    }
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # 6.  EVALUATION HELPERS
 # ══════════════════════════════════════════════════════════════════════════
@@ -382,22 +470,30 @@ def evaluate_policy(
             env = CascadeEnvironment()
             obs = env.reset(task_id=task_id, seed=seed, scenario_split="validation")
             invalid_actions = 0
+            parse_failures = 0
             critical_failures = 0
             rewards = []
             latencies = []
             actions_log = []
+            action_counts: Counter = Counter()
             done = False
 
             while not done:
                 t0 = time.perf_counter()
                 out = policy_fn(obs)
                 elapsed_ms = (time.perf_counter() - t0) * 1000.0
+                policy_meta: Dict[str, Any] = {}
                 if isinstance(out, tuple):
-                    action, elapsed_ms = out
+                    action = out[0]
+                    if len(out) >= 2 and isinstance(out[1], (int, float)):
+                        elapsed_ms = float(out[1])
+                    if len(out) >= 3 and isinstance(out[2], dict):
+                        policy_meta = out[2]
                 else:
                     action = out
 
                 latencies.append(float(elapsed_ms))
+                action_counts[action.action_type] += 1
                 actions_log.append({
                     "action_type": action.action_type,
                     "target_node_id": action.target_node_id,
@@ -407,12 +503,22 @@ def evaluate_policy(
                 meta = obs.metadata or {}
                 if not meta.get("action_valid", True):
                     invalid_actions += 1
+                parse_failed = bool(policy_meta.get("parse_failed", False))
+                parse_failed = parse_failed or bool(meta.get("parse_error", False))
+                if parse_failed:
+                    parse_failures += 1
                 if obs.diagnostics:
                     critical_failures += len(obs.diagnostics.critical_failures)
                 done = bool(obs.done)
 
             state = env.state
             avg_sector = sum(state.sector_health.values()) / max(len(state.sector_health), 1)
+            total_actions = max(sum(action_counts.values()), 1)
+            wait_count = int(action_counts.get("wait", 0))
+            action_distribution = {
+                action_name: int(count)
+                for action_name, count in sorted(action_counts.items())
+            }
             rows.append({
                 "policy":             policy_name,
                 "task_id":            task_id,
@@ -424,6 +530,11 @@ def evaluate_policy(
                 "invalid_actions":    invalid_actions,
                 "invalid_action_rate": invalid_actions / max(len(rewards), 1),
                 "budget_spent":       float(TASK_CONFIGS[task_id]["budget"] - state.budget_remaining),
+                "wait_rate":          wait_count / total_actions,
+                "action_diversity":   len(action_distribution),
+                "action_distribution": json.dumps(action_distribution),
+                "parse_failures":     parse_failures,
+                "parse_failure_rate": parse_failures / total_actions,
                 "critical_failures":  critical_failures,
                 "avg_response_ms":    statistics.mean(latencies) if latencies else 0.0,
                 "actions":            json.dumps(actions_log),
@@ -439,6 +550,7 @@ def collect_training_states(
     num_states: int,
     train_tasks: List[str],
     TASK_SEED_SPLITS: dict,
+    CascadeAction,
     CascadeEnvironment,
     heuristic_policy,
     build_system_prompt,
@@ -461,10 +573,34 @@ def collect_training_states(
         return base
 
     rows: List[dict] = []
+    EPSILON_EXPLORE = 0.30
+    EPSILON_STEPS = 5
+    MAX_CONSECUTIVE_WAITS = 3
+    sub_policies = make_training_sub_policies(CascadeAction, heuristic_policy)
+    policy_names = sorted(sub_policies.keys())
+
+    def _legal_action_to_obj(legal_action: Dict[str, Any]):
+        params: Dict[str, Any] = {}
+        for key in ("source", "target", "node_a", "node_b", "sector_a", "sector_b", "sector"):
+            if key in legal_action:
+                params[key] = legal_action[key]
+        kwargs: Dict[str, Any] = {
+            "action_type": str(legal_action.get("action_type", "wait")),
+            "target_node_id": legal_action.get("target_node_id"),
+        }
+        if params:
+            kwargs["parameters"] = params
+        return CascadeAction(**kwargs)
+
     log.info("Collecting %d training states from tasks: %s", num_states, train_tasks)
 
     for task_id in train_tasks:
         for seed in TASK_SEED_SPLITS[task_id]["train"]:
+            seed_basis = int(seed) + sum(ord(ch) for ch in task_id)
+            episode_rng = random.Random(seed_basis)
+            teacher_name = policy_names[seed_basis % len(policy_names)]
+            teacher_policy = sub_policies[teacher_name]
+
             env = CascadeEnvironment()
             obs = env.reset(
                 task_id=task_id,
@@ -474,6 +610,8 @@ def collect_training_states(
                 training_mode=True,
             )
             history: List[dict] = []
+            step_idx = 0
+            consecutive_waits = 0
             done = False
 
             while not done and len(rows) < num_states:
@@ -481,15 +619,34 @@ def collect_training_states(
                     "prompt":       make_training_prompt(obs, env),
                     "task_id":      task_id,
                     "seed":         int(seed),
+                    "teacher_policy": teacher_name,
                     "history_json": json.dumps(history),
                 })
-                action = heuristic_policy(obs)
+
+                action = teacher_policy(obs)
+                legal = env.get_legal_actions() if hasattr(env, "get_legal_actions") else []
+                non_wait = [a for a in legal if a.get("action_type") != "wait"]
+
+                if step_idx < EPSILON_STEPS and non_wait and episode_rng.random() < EPSILON_EXPLORE:
+                    action = _legal_action_to_obj(episode_rng.choice(non_wait))
+
+                if action.action_type == "wait":
+                    consecutive_waits += 1
+                else:
+                    consecutive_waits = 0
+
+                if consecutive_waits >= MAX_CONSECUTIVE_WAITS and non_wait:
+                    action = _legal_action_to_obj(episode_rng.choice(non_wait))
+                    consecutive_waits = 0
+
                 history.append({
                     "action_type":   action.action_type,
                     "target_node_id": action.target_node_id,
+                    "parameters": action.parameters or {},
                 })
                 obs = env.step(action)
                 done = bool(obs.done)
+                step_idx += 1
 
             if len(rows) >= num_states:
                 log.info("  Collected %d states.", len(rows))
@@ -529,6 +686,22 @@ def make_grpo_reward_fn(CascadeEnvironment, CascadeAction, parse_action_from_res
         task_id=None, seed=None, history_json=None,
         **kwargs,
     ) -> List[float]:
+        """
+        GRPO reward function — grader-aligned primary signal.
+
+        Core fix for wait-mode collapse: instead of optimising `raw_reward`
+        (step-level signal that diverged from the grader by up to +0.597),
+        we now use `env.state.score` (the actual grader output) as the base.
+
+        Signal architecture:
+          BASE  = grader_score × 2.0        ← primary (grader-aligned)
+          ADJ   = format + validity + wait + recovery + budget bonus
+
+        Wait-policy outcome after this fix:
+          grader_score ~0.12 → base ~0.24
+          Active agent:    ~0.65+ → base ~1.30+
+          Wait-attractor is now a local minimum, not a stable fixed point.
+        """
         rewards: List[float] = []
         n = len(completions)
         task_ids  = _ensure_list(task_id,      n, "task_easy")
@@ -561,38 +734,49 @@ def make_grpo_reward_fn(CascadeEnvironment, CascadeAction, parse_action_from_res
             legal  = env.get_legal_actions() if hasattr(env, "get_legal_actions") else []
             legal_types = {a["action_type"] for a in legal}
 
-            # ── Step and get raw reward ────────────────────────────────
+            # ── Step the environment ───────────────────────────────────
             next_obs = env.step(action)
             meta     = next_obs.metadata or {}
-            reward   = float(meta.get("raw_reward", 0.0))
 
-            # ── Format shaping ─────────────────────────────────────────
+            # ── PRIMARY SIGNAL: grader score (fixes reward-score decoupling) ──
+            # env.state.score calls grade() with the full accumulated trajectory.
+            # This is exactly what the evaluator ranks agents by, so the GRPO
+            # gradient now points in the same direction as the evaluation metric.
+            grader_score = float(env.state.score)   # strictly in (0.01, 0.99)
+            reward = grader_score * 2.0              # scale up for ADJ headroom
+
+            # ── Format shaping (lightweight; format is secondary to task perf) ──
             if "<action>" in text.lower():
-                reward += 0.08          # correct tag format
+                reward += 0.05          # correct tag format bonus
             else:
-                reward -= 0.15          # missing tag
+                reward -= 0.10          # missing tag (reduced — format is secondary)
 
-            # ── Validity shaping ──────────────────────────────────────
+            # ── Validity shaping ───────────────────────────────────────
             if not meta.get("action_valid", True):
-                reward -= 0.40          # illegal action
+                reward -= 0.30          # illegal action penalty
                 if legal_types - {"wait"}:
-                    reward -= 0.15      # better moves existed
+                    reward -= 0.10      # better legal moves existed
 
-            # ── Lazy-wait penalty ─────────────────────────────────────
+            # ── Lazy-wait penalty (grader handles bulk; this is a top-up) ──
             if action.action_type == "wait":
                 better = [a for a in legal if a["action_type"] != "wait"]
-                if   len(better) >= 4: reward -= 0.50
-                elif len(better) >= 2: reward -= 0.30
-                elif len(better) >= 1: reward -= 0.15
+                if   len(better) >= 4: reward -= 0.30
+                elif len(better) >= 2: reward -= 0.20
+                elif len(better) >= 1: reward -= 0.10
 
-            # ── Recovery bonus ────────────────────────────────────────
+            # ── Recovery bonus (proactive positive reinforcement) ───────
             if action.action_type == "recover" and meta.get("action_valid", True):
-                reward += 0.25
+                reward += 0.20
 
-            # ── Infrastructure health bonus ───────────────────────────
-            sector_summary = env._compute_sector_summary()
-            avg_health = sum(sector_summary.values()) / max(len(sector_summary), 1)
-            reward += 0.10 * (avg_health - 0.5)
+            # ── Budget-utilization bonus (breaks zero-spend fixed point) ──
+            # A wait-only agent spends 0. Reward proportional spending
+            # up to 50% of total budget as a small positive signal.
+            budget_total     = float(getattr(env, "_budget_total", 10.0))
+            budget_remaining = float(getattr(env, "_budget", budget_total))
+            budget_spent_now = budget_total - budget_remaining
+            if budget_total > 0:
+                spend_ratio = min(budget_spent_now / (0.5 * budget_total), 1.0)
+                reward += 0.10 * spend_ratio
 
             rewards.append(float(max(-3.0, min(3.0, reward))))
 
@@ -817,6 +1001,24 @@ def run_evaluation(
     def make_prompt(obs):
         return SYSTEM_PROMPT + "\n\n" + build_user_prompt(obs)
 
+    def _looks_parseable_action(text: str) -> bool:
+        if re.search(r"<action>\s*\w+\([^)]*\)\s*</action>", text, re.IGNORECASE):
+            return True
+        if re.search(r'"action_type"\s*:\s*"\w+"', text, re.IGNORECASE):
+            return True
+        if re.search(
+            (
+                r"\b(harden|recover|isolate|shed_load|coordinate|wait"
+                r"|reroute|prioritize|deploy_repair_crew|emergency_shutdown"
+                r"|cross_sector_bridge|patch_scada|redistribute_load"
+                r"|request_mutual_aid|controlled_cascade|multi_sector_lockdown)\([^)]*\)"
+            ),
+            text,
+            re.IGNORECASE,
+        ):
+            return True
+        return False
+
     def grpo_policy(obs):
         prompt  = make_prompt(obs)
         inputs  = tokenizer(
@@ -834,7 +1036,8 @@ def run_evaluation(
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         new_tokens = output_ids[0][inputs["input_ids"].shape[1]:]
         text = tokenizer.decode(new_tokens, skip_special_tokens=True)
-        return parse_action_from_response(text, obs), elapsed_ms
+        parse_failed = not _looks_parseable_action(text)
+        return parse_action_from_response(text, obs), elapsed_ms, {"parse_failed": parse_failed}
 
     log.info("Evaluating heuristic baseline …")
     heuristic_df = evaluate_policy(
@@ -857,8 +1060,35 @@ def run_evaluation(
             success_rate      =("success",            "mean"),
             invalid_action_rate=("invalid_action_rate","mean"),
             mean_budget_spent =("budget_spent",       "mean"),
+            mean_wait_rate    =("wait_rate",          "mean"),
+            mean_parse_failure_rate=("parse_failure_rate", "mean"),
             mean_crit_failures=("critical_failures",  "mean"),
             avg_response_ms   =("avg_response_ms",    "mean"),
+        )
+        .reset_index()
+    )
+
+    def _aggregate_action_distribution(values: pd.Series) -> str:
+        total: Counter = Counter()
+        for v in values:
+            try:
+                parsed = json.loads(v) if isinstance(v, str) else {}
+            except Exception:
+                parsed = {}
+            if isinstance(parsed, dict):
+                for k, cnt in parsed.items():
+                    total[str(k)] += int(cnt)
+        return json.dumps(dict(sorted(total.items())))
+
+    task_summary = (
+        all_results.groupby(["policy", "task_id"])
+        .agg(
+            runs=("score", "count"),
+            mean_score=("score", "mean"),
+            wait_rate=("wait_rate", "mean"),
+            parse_failure_rate=("parse_failure_rate", "mean"),
+            mean_budget_spent=("budget_spent", "mean"),
+            action_distribution=("action_distribution", _aggregate_action_distribution),
         )
         .reset_index()
     )
@@ -866,6 +1096,7 @@ def run_evaluation(
     # ── Save ──────────────────────────────────────────────────────────
     all_results.to_csv(args.results_csv, index=False)
     summary.to_csv("cascadeguard_eval_summary.csv", index=False)
+    task_summary.to_csv("cascadeguard_eval_task_summary.csv", index=False)
     log.info("Results saved → %s", args.results_csv)
 
     # ── Print to terminal ─────────────────────────────────────────────
@@ -876,6 +1107,8 @@ def run_evaluation(
     print(all_results.drop(columns=["actions"]).to_string(index=False))
     print("\n=== Policy Summary ===")
     print(summary.to_string(index=False))
+    print("\n=== Per-Task Summary ===")
+    print(task_summary.to_string(index=False))
 
     # ── Plot ──────────────────────────────────────────────────────────
     try:
@@ -972,6 +1205,7 @@ def main():
         num_states=args.states,
         train_tasks=args.tasks,
         TASK_SEED_SPLITS=TASK_SEED_SPLITS,
+        CascadeAction=CascadeAction,
         CascadeEnvironment=CascadeEnvironment,
         heuristic_policy=heuristic_policy,
         build_system_prompt=build_system_prompt,

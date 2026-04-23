@@ -113,6 +113,7 @@ class CascadeEnvironment(Environment):
         self._last_obs: Optional[CascadeObservation] = None
         self._zero_sector_streak: int = 0
         self._scada_start: Optional[int] = None
+        self._scada_event: Optional[dict] = None
         self._delayed_sector_active: Dict[str, bool] = {}
         self._coord_clear: Dict[str, int] = {}
         self._partial_obs_nodes: Set[str] = set()
@@ -258,9 +259,12 @@ class CascadeEnvironment(Environment):
 
         self._stress_schedule = cfg["stress_schedule"]
         self._scada_start = None
+        self._scada_event = None
         for step_n, event in self._stress_schedule.items():
             if event.get("type") == "scada_anomaly" and event.get("recurring"):
                 self._scada_start = step_n
+            self._scada_event = dict(event)
+            break
 
         self._obs_buffer = {nid: [] for nid in self._node_states}
 
@@ -691,15 +695,17 @@ class CascadeEnvironment(Environment):
         self._action_history.append(action_type)
 
         # Apply recurring SCADA anomaly — skip nodes that have been patched
-        if self._scada_start is not None and self._step >= self._scada_start:
-            for step_n, event in self._stress_schedule.items():
-                if event.get("type") == "scada_anomaly" and event.get("recurring"):
-                    t = event.get("target")
-                    if t and t in self._node_states and t not in self._scada_patched:
-                        ns = self._node_states[t]
-                        if ns.health > 0.0:
-                            ns.health = max(0.0, ns.health + event["effect"])
-                    break
+        if (
+            self._scada_start is not None
+            and self._scada_event is not None
+            and self._step >= self._scada_start
+        ):
+            t = self._scada_event.get("target")
+            if t and t in self._node_states and t not in self._scada_patched:
+                ns = self._node_states[t]
+                if ns.health > 0.0:
+                    effect = float(self._scada_event.get("effect", 0.0))
+                    ns.health = max(0.0, ns.health + effect)
 
         # v2.2: apply reroute health bonus to reroute targets
         for node_id in self._reroute_targets:
@@ -1135,12 +1141,13 @@ class CascadeEnvironment(Environment):
         """Return True if node_id has an active, unpatched SCADA anomaly drain."""
         if node_id in self._scada_patched:
             return False
-        if self._scada_start is None or self._step < self._scada_start:
+        if (
+            self._scada_start is None
+            or self._scada_event is None
+            or self._step < self._scada_start
+        ):
             return False
-        for step_n, event in self._stress_schedule.items():
-            if event.get("type") == "scada_anomaly" and event.get("recurring"):
-                return event.get("target") == node_id
-        return False
+        return self._scada_event.get("target") == node_id
 
     def _get_node_neighbors(self, node_id: str) -> List[str]:
         """Return all adjacent node IDs (both incoming and outgoing edges)."""
@@ -1202,6 +1209,20 @@ class CascadeEnvironment(Environment):
             if target and target in self._node_states:
                 ns = self._node_states[target]
                 ns.health = max(0.0, ns.health + event["effect"])
+        elif etype == "load_surge":
+            effect = float(event.get("effect", 0.2))
+            targets = event.get("targets")
+            if isinstance(targets, list):
+                target_nodes = [str(nid) for nid in targets if nid in self._node_states]
+            else:
+                target_nodes = [
+                    nid
+                    for nid, ns in self._node_states.items()
+                    if ns.is_operational and ns.sector != "hospital"
+                ]
+            for nid in target_nodes:
+                ns = self._node_states[nid]
+                ns.load = max(0.0, min(1.0, ns.load + effect))
 
     def inject_attack(self, attack_event: Optional[dict]) -> None:
         """
@@ -1388,6 +1409,14 @@ class CascadeEnvironment(Environment):
                     lat, lon, radius = self._node_coords[nid]
                     telecom_operational.append((nid, lat, lon, radius))
 
+        # Fill rolling observation buffer BEFORE building delayed observations.
+        # This keeps delay windows episode-local and avoids stale ordering artifacts.
+        for nid, ns in self._node_states.items():
+            buf = self._obs_buffer.setdefault(nid, [])
+            buf.append((ns.health, ns.load))
+            if len(buf) > 4:
+                buf.pop(0)
+
         node_list: List[NodeStatus] = []
         for nid, ns in self._node_states.items():
             is_delayed = self._is_node_delayed(nid)
@@ -1438,12 +1467,6 @@ class CascadeEnvironment(Environment):
                     observation_confidence=round(obs_confidence, 3),
                 )
             )
-
-        for nid, ns in self._node_states.items():
-            buf = self._obs_buffer.setdefault(nid, [])
-            buf.append((ns.health, ns.load))
-            if len(buf) > 4:
-                buf.pop(0)
 
         edge_list: List[EdgeStatus] = []
         for key in self._edge_states:

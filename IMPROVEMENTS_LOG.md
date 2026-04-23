@@ -4,6 +4,65 @@ A versioned record of every improvement sprint.
 
 ---
 
+## v2.3 — 2026-04-22 | Remaining Plan Execution (Phases 1–5)
+
+### Scope Completed
+
+This sprint completes the remaining checklist items from the master plan: training
+diversity controls, runtime correctness fixes, new surge-demand task integration,
+evaluation observability upgrades, and grader budget-efficiency wiring.
+
+### 1) Runtime Correctness Fixes
+
+| Fix | File | Outcome |
+|---|---|---|
+| Observation buffer fill order moved before node-list construction in `_build_observation()` | `server/cascade_environment.py` | Delayed observations now use correctly ordered episode-local history; removes stale first-observation behavior |
+| SCADA event initialized and cached at reset (`_scada_event`) instead of schedule scans each step | `server/cascade_environment.py` | Recurring SCADA behavior is deterministic per episode and no longer lazily inferred during step execution |
+| `_has_active_scada()` switched to cached event path | `server/cascade_environment.py` | `patch_scada` validity checks align with runtime SCADA application |
+
+### 2) New Task: `task_surge_demand`
+
+| Addition | File | Outcome |
+|---|---|---|
+| New task config with +20% load surges at steps 3, 8, 14 and no direct equipment faults | `tasks.py` | Adds isolated load-management benchmark to curriculum |
+| Seed families for train/validation/holdout | `tasks.py` (`TASK_SEED_SPLITS`) | Reproducible multi-seed evaluation for surge task |
+| `load_surge` stress-event handling | `server/cascade_environment.py` | Surge events now increase node loads during runtime |
+| Surge grader `grade_surge_demand()` + dispatch wiring | `server/graders.py` | Deterministic scoring for the new task |
+| Sanity verification task list updated | `verify_tasks.py` | Local structural checks now include surge task |
+
+### 3) Training Diversity and Collapse-Prevention
+
+| Addition | File | Outcome |
+|---|---|---|
+| Three teacher sub-policies: `proactive_hardener`, `load_manager`, `recovery_prioritizer` | `training/train_grpo.py` | State collection now covers distinct strategic modes |
+| Epsilon exploration in `collect_training_states()` (`ε=0.30`, first 5 steps) | `training/train_grpo.py` | Forces non-wait coverage in early rollout states |
+| Consecutive-wait cap (`MAX_CONSECUTIVE_WAITS=3`) | `training/train_grpo.py` | Prevents long passive segments in collected trajectories |
+| Default training task list includes `task_surge_demand` | `training/train_grpo.py` | Curriculum includes load-only stress regime by default |
+
+### 4) Evaluation & Observability Upgrades
+
+| Metric/Output | File | Outcome |
+|---|---|---|
+| Per-episode action distribution (`action_distribution`) | `training/train_grpo.py` | Direct visibility into action usage patterns |
+| Wait-rate + action-diversity | `training/train_grpo.py` | Better anti-collapse monitoring |
+| Parse-failure count/rate | `training/train_grpo.py` | Tracks output-format robustness in policy evaluation |
+| Per-task summary CSV (`cascadeguard_eval_task_summary.csv`) | `training/train_grpo.py` | Task-level comparison and drift analysis |
+
+### 5) Grader Budget-Efficiency Component
+
+| Addition | File | Outcome |
+|---|---|---|
+| `_budget_efficiency_score()` helper (0 spend → floor, 50% spend → full credit) | `server/graders.py` | Explicitly rewards useful budget utilization |
+| Wired into `grade_easy`, `grade_medium`, `grade_gen_blackout` | `server/graders.py` | Removes residual zero-spend safe harbor in these task graders |
+
+### 6) Inference Task Registry Update
+
+| Update | File | Outcome |
+|---|---|---|
+| `TASK_NAMES`, `MAX_STEPS`, and budget map include `task_surge_demand` | `inference.py` | Baseline/eval sweeps can run on the new task without manual edits |
+
+---
+
 ## v2.2 — 2026-04-21 | Action Space Expansion (Round 3)
 
 ### What Changed

@@ -267,7 +267,65 @@ TASK_CONFIGS: Dict[str, dict] = {
     },
 
     # ------------------------------------------------------------------
-    # Task 6: Metro City — Geo-realistic full city resilience scenario
+    # Task 6: Surge-demand stress test - no direct equipment faults
+    # ------------------------------------------------------------------
+    "task_surge_demand": {
+        "task_id": "task_surge_demand",
+        "seed": 888,
+        "max_steps": 18,
+        "budget": 9.0,
+        "nodes": [
+            # power (5)
+            {"node_id": "POWER_GEN_1",   "sector": "power",    "is_critical": False, "lat": 19.076, "lon": 72.877, "service_radius_km": 50.0},
+            {"node_id": "POWER_TRANS_1", "sector": "power",    "is_critical": False, "lat": 19.120, "lon": 72.840, "service_radius_km": 30.0},
+            {"node_id": "POWER_TRANS_2", "sector": "power",    "is_critical": False, "lat": 19.180, "lon": 72.960, "service_radius_km": 30.0},
+            {"node_id": "POWER_DIST_1",  "sector": "power",    "is_critical": False, "lat": 19.090, "lon": 72.860, "service_radius_km": 20.0},
+            {"node_id": "POWER_DIST_2",  "sector": "power",    "is_critical": False, "lat": 19.150, "lon": 72.900, "service_radius_km": 20.0},
+            # water (4)
+            {"node_id": "WATER_TREAT_1", "sector": "water",    "is_critical": False, "lat": 19.070, "lon": 72.830, "service_radius_km": 25.0},
+            {"node_id": "WATER_PUMP_1",  "sector": "water",    "is_critical": False, "lat": 19.060, "lon": 72.820, "service_radius_km": 15.0},
+            {"node_id": "WATER_PUMP_2",  "sector": "water",    "is_critical": False, "lat": 19.105, "lon": 72.870, "service_radius_km": 15.0},
+            {"node_id": "WATER_DIST_1",  "sector": "water",    "is_critical": False, "lat": 19.080, "lon": 72.855, "service_radius_km": 12.0},
+            # hospital (3)
+            {"node_id": "HOSP_1",        "sector": "hospital", "is_critical": True,  "lat": 19.055, "lon": 72.835, "service_radius_km": 8.0},
+            {"node_id": "HOSP_2",        "sector": "hospital", "is_critical": True,  "lat": 19.115, "lon": 72.875, "service_radius_km": 8.0},
+            {"node_id": "EMERG_1",       "sector": "hospital", "is_critical": False, "lat": 19.075, "lon": 72.845, "service_radius_km": 10.0},
+        ],
+        "edges": [
+            # power backbone
+            {"source_id": "POWER_GEN_1",   "target_id": "POWER_TRANS_1"},
+            {"source_id": "POWER_GEN_1",   "target_id": "POWER_TRANS_2"},
+            {"source_id": "POWER_TRANS_1", "target_id": "POWER_DIST_1"},
+            {"source_id": "POWER_TRANS_2", "target_id": "POWER_DIST_2"},
+            # water -> power
+            {"source_id": "POWER_DIST_1",  "target_id": "WATER_TREAT_1"},
+            {"source_id": "POWER_DIST_1",  "target_id": "WATER_PUMP_1"},
+            {"source_id": "POWER_DIST_2",  "target_id": "WATER_PUMP_2"},
+            {"source_id": "WATER_PUMP_1",  "target_id": "WATER_DIST_1"},
+            {"source_id": "WATER_PUMP_2",  "target_id": "WATER_DIST_1"},
+            # hospital -> power + water
+            {"source_id": "POWER_DIST_1",  "target_id": "HOSP_1"},
+            {"source_id": "WATER_DIST_1",  "target_id": "HOSP_1"},
+            {"source_id": "POWER_DIST_2",  "target_id": "HOSP_2"},
+            {"source_id": "WATER_DIST_1",  "target_id": "HOSP_2"},
+            {"source_id": "POWER_DIST_1",  "target_id": "EMERG_1"},
+        ],
+        "stress_schedule": {
+            3:  {"type": "load_surge", "target": None, "effect": 0.20},
+            8:  {"type": "load_surge", "target": None, "effect": 0.20},
+            14: {"type": "load_surge", "target": None, "effect": 0.20},
+        },
+        "delayed_sectors": ["water"],
+        "partial_obs_nodes": [],
+        "description": (
+            "Demand-surge resilience scenario with no direct equipment faults. "
+            "System load spikes by +20% at steps 3, 8, and 14; success depends on "
+            "timely shed_load and coordination decisions under moderate budget pressure."
+        ),
+    },
+
+    # ------------------------------------------------------------------
+    # Task 7: Metro City — Geo-realistic full city resilience scenario
     # 18 nodes, real Mumbai-inspired coordinates, monsoon story arc
     # ------------------------------------------------------------------
     "task_real_city": {
@@ -383,6 +441,11 @@ TASK_SEED_SPLITS: Dict[str, Dict[str, List[int]]] = {
         "train": [314, 1314, 2314, 3314, 4314],
         "validation": [5314, 6314],
         "holdout": [7314, 8314],
+    },
+    "task_surge_demand": {
+        "train": [888, 1888, 2888, 3888, 4888],
+        "validation": [5888, 6888],
+        "holdout": [7888, 8888],
     },
     "task_real_city": {
         "train": [2026, 3026, 4026, 5026, 6026],
