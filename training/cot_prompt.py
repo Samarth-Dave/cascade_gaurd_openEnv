@@ -25,6 +25,29 @@ if TYPE_CHECKING:
     from cascade_guard.models import CascadeAction, CascadeObservation
 
 
+ADVANCED_ACTION_TYPES = (
+    "reroute",
+    "prioritize",
+    "deploy_repair_crew",
+    "emergency_shutdown",
+    "cross_sector_bridge",
+    "patch_scada",
+    "redistribute_load",
+    "request_mutual_aid",
+    "controlled_cascade",
+    "multi_sector_lockdown",
+)
+
+CORE_ACTION_TYPES = (
+    "recover",
+    "harden",
+    "coordinate",
+    "shed_load",
+    "isolate",
+    "wait",
+)
+
+
 SYSTEM_PROMPT = """\
 You are an AI infrastructure coordinator managing a real-world cross-sector critical infrastructure network.
 Your goal is to keep power, water, hospital, and telecom systems operational during cascading failures.
@@ -260,6 +283,84 @@ def build_user_prompt(obs: "CascadeObservation") -> str:
     return "\n".join(lines)
 
 
+def _legal_action_to_call(action: dict) -> str:
+    action_type = str(action.get("action_type", "wait"))
+    params = action.get("parameters") or {}
+
+    if action_type == "reroute":
+        source = params.get("source") or action.get("target_node_id") or "SOURCE"
+        target = params.get("target") or "TARGET"
+        return f"reroute({source},{target})"
+
+    if action_type == "cross_sector_bridge":
+        sector_a = params.get("sector_a") or action.get("target_node_id") or "SECTOR_A"
+        sector_b = params.get("sector_b") or "SECTOR_B"
+        return f"cross_sector_bridge({sector_a},{sector_b})"
+
+    if action_type == "redistribute_load":
+        node_a = params.get("node_a") or action.get("target_node_id") or "NODE_A"
+        node_b = params.get("node_b") or "NODE_B"
+        return f"redistribute_load({node_a},{node_b})"
+
+    if action_type == "request_mutual_aid":
+        sector = params.get("sector") or action.get("target_node_id") or "SECTOR"
+        return f"request_mutual_aid({sector})"
+
+    target = action.get("target_node_id")
+    return f"{action_type}({target if target else 'null'})"
+
+
+def _summarize_legal_actions(legal_actions: list[dict], max_examples: int = 30) -> str:
+    if not legal_actions:
+        return "\n\nLegal action types now: wait(1)\nRepresentative legal actions: wait(null)"
+
+    by_type: dict[str, list[str]] = {}
+    type_counts: dict[str, int] = {}
+    for action in legal_actions:
+        action_type = str(action.get("action_type", "wait"))
+        type_counts[action_type] = type_counts.get(action_type, 0) + 1
+        call = _legal_action_to_call(action)
+        bucket = by_type.setdefault(action_type, [])
+        if call not in bucket:
+            bucket.append(call)
+
+    ordered_types: list[str] = []
+    for action_type in CORE_ACTION_TYPES:
+        if action_type in by_type:
+            ordered_types.append(action_type)
+    for action_type in ADVANCED_ACTION_TYPES:
+        if action_type in by_type and action_type not in ordered_types:
+            ordered_types.append(action_type)
+    for action_type in sorted(by_type.keys()):
+        if action_type not in ordered_types:
+            ordered_types.append(action_type)
+
+    prioritized_types = [a for a in ADVANCED_ACTION_TYPES if a in by_type]
+    prioritized_types.extend([a for a in ordered_types if a not in prioritized_types])
+
+    examples: list[str] = []
+    for action_type in prioritized_types:
+        for call in by_type[action_type][:2]:
+            if call not in examples:
+                examples.append(call)
+            if len(examples) >= max_examples:
+                break
+        if len(examples) >= max_examples:
+            break
+
+    types_line = ", ".join(f"{name}({type_counts[name]})" for name in ordered_types)
+    sample_line = " | ".join(examples) if examples else "wait(null)"
+    advanced_legal = [a for a in ADVANCED_ACTION_TYPES if a in by_type]
+
+    legal_summary = (
+        f"\n\nLegal action types now: {types_line}"
+        f"\nRepresentative legal actions (sampled across action types): {sample_line}"
+    )
+    if advanced_legal:
+        legal_summary += "\nAdvanced actions currently legal: " + ", ".join(advanced_legal)
+    return legal_summary
+
+
 def make_training_prompt(obs: "CascadeObservation", env=None, grpo_mode: bool = True) -> str:
     """
     Build a full training prompt including system + user + legal action list.
@@ -277,10 +378,9 @@ def make_training_prompt(obs: "CascadeObservation", env=None, grpo_mode: bool = 
 
     legal = []
     if env is not None and hasattr(env, "get_legal_actions"):
-        for action in env.get_legal_actions():
-            action_type = action.get("action_type", "wait")
-            target = action.get("target_node_id")
-            legal.append(f"{action_type}({target if target else 'null'})")
+        legal_actions = env.get_legal_actions()
+        legal_line = _summarize_legal_actions(legal_actions)
+        return system + "\n\n" + user + legal_line
     else:
         pending_set = set(obs.pending_recoveries)
 
@@ -322,7 +422,7 @@ def make_training_prompt(obs: "CascadeObservation", env=None, grpo_mode: bool = 
 
         legal.append("wait(null)")
 
-    legal_str  = " | ".join(legal[:25])
+    legal_str = " | ".join(legal[:30])
     legal_line = f"\n\nLegal actions this step: {legal_str}"
 
     return system + "\n\n" + user + legal_line
