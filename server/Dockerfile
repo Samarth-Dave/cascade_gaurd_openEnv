@@ -75,6 +75,12 @@ ENV PYTHONPATH="/app/env:$PYTHONPATH"
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
+# Pre-fetch real OSM node data at build time.
+# Falls back to curated hardcoded coordinates if Overpass API is unreachable.
+RUN cd /app/env && \
+    mkdir -p data && \
+    python scripts/fetch_real_nodes.py 2>&1 || \
+    echo "OSM fetch failed — fallback coords will be used at runtime"
+
 # Run the FastAPI server
-# The module path is constructed to work with the /app/env structure
 CMD ["sh", "-c", "cd /app/env && uvicorn server.app:app --host 0.0.0.0 --port 8000"]

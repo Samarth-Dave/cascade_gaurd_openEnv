@@ -1,6 +1,6 @@
 ---
 title: CascadeGuard Environment
-emoji: ⚡
+emoji: "⚡"
 colorFrom: blue
 colorTo: green
 sdk: docker
@@ -13,354 +13,365 @@ tags:
   - infrastructure
 ---
 
-# CascadeGuard Package
+# CascadeGuard
 
-CascadeGuard is an OpenEnv environment for cross-sector infrastructure resilience.
-It simulates cascading failures across power, water, hospital, and telecom systems,
-where local failures can quickly become system-wide outages if the agent responds late
-or in the wrong dependency order.
+CascadeGuard is a cascading-failure resilience system built around two pieces:
 
-## 1. Problem Description
+- an OpenEnv backend that simulates cross-sector infrastructure crises
+- a Vite + React frontend that visualizes live episodes and sends operator actions
 
-This environment simulates cascading failures in interdependent infrastructure systems.
-The core idea is to train and evaluate an AI coordinator that must keep critical
-services alive during multi-step crises (equipment faults, weather escalation, and
-cyber-physical degradation) under finite budget and imperfect observability.
+The backend models failures across power, water, hospital, and telecom systems. The frontend connects to the backend over WebSocket, renders the live graph and sector health, and lets the user step the environment or dispatch actions.
 
-Why this problem matters:
-- Real infrastructure failures are coupled, not isolated. A power disruption can
-  disable water treatment, which then degrades hospitals and emergency response.
-- Recovery is constrained by dependency order. Recovering a downstream node before
-  its upstream suppliers are operational is often invalid or ineffective.
-- Emergency operations are budget-constrained. Hardening and coordination improve
-  resilience but consume limited resources.
+## Repository Layout
 
-How this environment maps to the PS (problem statement) expectations:
-- Real-world utility: models a real infrastructure resilience task, not a toy game.
-- OpenEnv compliance: typed action/observation/state models and reset/step/state APIs.
-- Task quality: multiple tasks with clear difficulty progression and grader-based scoring.
-- Reward quality: dense trajectory-level shaping, not only terminal binary rewards.
-- Baseline reproducibility: inference flow is supported and benchmark-friendly.
+This git repository contains the environment and server:
 
-Current task set:
-- task_easy: single-sector fault handling
-- task_medium: tri-sector storm with delayed telemetry
-- task_hard: four-sector crisis with partial observability and recurring anomaly
-- task_gen_blackout: root generator blackout cascade
-- task_cyberattack: cyber-physical compound attack
+```text
+cascade_gaurd_openEnv/
+  server/
+    app.py                    FastAPI/OpenEnv server entrypoint
+    cascade_environment.py    environment dynamics and reward logic
+  models.py                   Pydantic action, observation, and state models
+  tasks.py                    task registry and scenario definitions
+  data/                       real-world node and edge data
+  inference.py                baseline inference runner
+  test_ws.py                  websocket protocol smoke test
+  ui/
+    README.md                 repo-side frontend documentation
+```
 
-### Task Objectives and Grader Criteria
+The frontend source now lives inside this repository under:
 
-- task_easy (easy)
-  - Objective: stabilize a power-only network after a single equipment fault.
-  - Grader signals: average sector health, blackout avoidance, cascade containment, and low cascade depth.
-  - Expected behavior: proactive hardening and fast recovery sequencing.
+```text
+ui/
+```
+ 
+It is the active UI that replaced the old standalone HTML prototype.
 
-- task_medium (medium)
-  - Objective: maintain power, water, and hospitals through storm escalation with delayed water observations.
-  - Grader signals: average health, hospital maintenance, blackout avoidance, cascade containment, depth, and dependency-order correctness.
-  - Expected behavior: coordination under delayed telemetry and dependency-safe recoveries.
+## System Overview
 
-- task_hard (hard)
-  - Objective: manage four sectors with partial observability, recurring SCADA degradation, and weather stress.
-  - Grader signals: medium metrics plus budget efficiency and intervention efficiency.
-  - Expected behavior: budget triage, critical-node protection, and failure-chain-aware recovery.
+### Backend
 
-- task_gen_blackout (hard+ specialized)
-  - Objective: survive a root-generator failure chain and a follow-up distribution fault.
-  - Grader signals: high emphasis on hospital continuity plus blackout/cascade control.
-  - Expected behavior: centrality-aware hardening (root and backbone before leaves).
+The backend exposes an OpenEnv-compatible environment with:
 
-- task_cyberattack (hardest)
-  - Objective: withstand persistent cyber-physical degradation plus multiple faults and storm pressure.
-  - Grader signals: hospital continuity, blackout prevention, cascade control, budget/intervention efficiency.
-  - Expected behavior: sustained threat management over long horizons.
+- typed actions via `CascadeAction`
+- typed observations via `CascadeObservation`
+- typed state via `CascadeState`
+- reset and step semantics over WebSocket
+- supporting REST endpoints for health, graph, city, task, and node metadata
 
-All grader outputs are deterministic and bounded strictly inside (0, 1) for each task run.
+### Frontend
 
-## 2. Action Space
+The frontend is a React app that:
 
-The agent has 15 actions organized across four difficulty tiers. This expanded action
-space gives GRPO sufficient decision-surface to learn meaningful strategy differentiation
-across tasks with 4 sectors, up to 18 nodes, and up to 35 steps per episode.
+- connects to `ws://localhost:8000/ws`
+- sends `reset` and `step` payloads
+- renders the city map, nodes, edges, logs, and reward curve
+- uses live OpenEnv data when available
+- falls back to a scripted simulation if the backend is unreachable
 
-### Tier 1 — Basic
+## Backend Contract
 
-**wait()**
-The no-op. Valid but penalized under actionable conditions (active failure, pressure
-above threshold). Use only during genuine repair cooldowns when no other valid action
-exists. Cost: 0 budget.
+### WebSocket Endpoint
 
-**harden(node)**
-Spends budget to lower a node's failure threshold, making it harder to knock out during
-stress windows. Effect persists for the episode. Use proactively when `upcoming_stress_level`
-is `soon` or `imminent`. Cost: 0.8–1.2 budget units.
+The frontend connects to:
 
-**recover(node)**
-Starts a multi-step restoration on a failed node. Only valid when all upstream
-dependencies are operational. Invalid uses are penalized. Takes 2–4 steps depending on
-node type. Cost: 0.6–1.0 budget units.
+```text
+ws://localhost:8000/ws
+```
 
-### Tier 2 — Intermediate
+### Reset Message
 
-**isolate(node)**
-Severs all outgoing cascade edges from a node to prevent it from propagating its failure
-state downstream. The node itself stays degraded, but the cascade stops at that boundary.
-Effect lasts 3 steps. Use when a failed node's downstream neighbors are healthy and
-worth protecting. Cost: 0.3 budget.
+```json
+{
+  "type": "reset",
+  "data": {
+    "task_id": "task_hard"
+  }
+}
+```
 
-**reroute(source, target)**
-Redirects power or water flow from a healthy alternative node to a target that has lost
-its upstream supply. Only valid when a viable alternate supply path exists in the graph.
-Allows hospitals or water treatment to remain operational while a generator is being
-repaired. Cost: 0.6 budget.
+### Step Message
 
-**prioritize(node)**
-Marks a node as highest-priority for the current step, granting it a +0.15 stability
-bonus and making it immune to stress escalation for 1 step. No direct budget cost, but
-limited to once per 3 steps (cooldown enforced). Use to protect critical nodes during
-peak stress windows. Cost: 0 (cooldown gated).
+```json
+{
+  "type": "step",
+  "data": {
+    "action_type": "recover",
+    "target_node_id": "POWER_GEN_1",
+    "parameters": {}
+  }
+}
+```
 
-**deploy_repair_crew(node)**
-Accelerated recovery — reduces repair time to 1–2 steps at 1.5× the standard recover
-budget cost. Use when a hospital or critical node is at critically low health and cannot
-survive the normal repair window. Cost: 1.5× recover cost.
+### Observation Shape
 
-**coordinate(node)**
-Reduces observation delay on delayed-sector nodes for 2 steps, improving the agent's
-observability confidence score for that sector. Especially important in task_medium and
-task_cyberattack where delayed sectors obscure real node state. Cost: 0.4 budget.
+The server returns observations containing:
 
-**shed_load(node)**
-Reduces overload pressure on a node. Unsafe use on critical or hospital nodes is
-strongly penalized. Use only on non-critical nodes that are at risk of failure due to
-sustained high load rather than external stress events. Cost: 0.3 budget.
+- `step`
+- `max_steps`
+- `budget_remaining`
+- `weather_forecast`
+- `nodes`
+- `edges`
+- `active_failures`
+- `pending_recoveries`
+- `sector_summary`
+- `diagnostics`
+- `task_id`
+- `info`
+- `reward`
+- `done`
 
-### Tier 3 — Hard
+Key node fields include:
 
-**emergency_shutdown(node)**
-Performs a controlled shutdown of a node whose health is below 30%, preventing it from
-triggering a chaotic cascade. Unlike isolate, this also halts load on the node, which
-can relieve pressure on its upstream suppliers. The agent controls the timing rather
-than letting the environment trigger an uncontrolled failure. Cost: 0.2 budget.
+- `node_id`
+- `sector`
+- `health`
+- `load`
+- `is_operational`
+- `is_hardened`
+- `observation_delayed`
+- `is_critical`
+- `real_name`
+- `lat`
+- `lon`
+- `service_radius_km`
 
-**cross_sector_bridge(sector_a, sector_b)**
-Establishes a temporary cross-sector redundancy link between two sectors for 3 steps,
-allowing one sector's operational nodes to partially compensate for a gap in the other.
-For example, bridging telecom to hospital can restore partial observability during a
-hospital-sector crisis. Cost: 1.5 budget.
+### Supported Core Actions
 
-**patch_scada(node)**
-Specifically counters an active `scada_anomaly` stress event. Stops the recurring health
-drain on the targeted node and restores observation fidelity. Only valid on nodes
-currently under SCADA anomaly. Critical in task_cyberattack where the drain compounds
-every step from the start. Cost: 0.8 budget.
+Common actions used by the UI:
 
-**redistribute_load(node_a, node_b)**
-Moves excess load from an overloaded node (node_a) to an underloaded node (node_b)
-within the same sector. Both nodes must be operational. Lowers node_a's failure
-probability for 2 steps. Requires the agent to reason about relative load levels, not
-just binary healthy/failed states. Cost: 0.5 budget.
+- `recover`
+- `harden`
+- `shed_load`
+- `coordinate`
+- `wait`
 
-**request_mutual_aid(sector)**
-Invokes an external resource injection, adding a one-time +0.2 health boost to all
-nodes in the target sector. Represents calling in outside mutual aid. Can only be used
-once per episode — this is the emergency reserve. Use only when a sector is in
-unrecoverable freefall and individual node actions cannot stop it. Cost: 2.5 budget.
+The model layer also supports advanced actions such as:
 
-### Tier 4 — Expert
+- `isolate`
+- `reroute`
+- `prioritize`
+- `deploy_repair_crew`
+- `emergency_shutdown`
+- `cross_sector_bridge`
+- `patch_scada`
+- `redistribute_load`
+- `request_mutual_aid`
+- `controlled_cascade`
+- `multi_sector_lockdown`
 
-**controlled_cascade(node)**
-Deliberately triggers a controlled partial failure on a low-importance node to release
-pressure across the graph. The sacrifice node takes an immediate -0.5 health hit, while
-each neighboring node gains +0.15 stability for 2 steps. No direct budget cost, but the
-grader penalizes the sacrificed node's health loss. Requires full graph centrality
-awareness to identify which node is genuinely least critical. Cost: 0 budget (grader
-penalty applies).
+## REST Endpoints
 
-**multi_sector_lockdown()**
-Freezes the entire system in a defensive state for 2 steps: no cascade can propagate,
-all health values stabilize, but no recovery is possible during the lockdown window.
-After 2 steps the system unfreezes and normal dynamics resume. Use only when
-simultaneous multi-sector failure is spiraling faster than individual actions can
-address. Cost: 2.0 budget.
+The FastAPI server also exposes:
 
-### Action Summary Table
+- `GET /health`
+- `GET /graph?city=london`
+- `GET /cities`
+- `GET /tasks`
+- `GET /node_data?city=london&node_id=...`
 
-| # | Action | Tier | Budget Cost | Primary Use |
-|---|--------|------|-------------|-------------|
-| 1 | wait() | Basic | 0 | No-op during cooldowns |
-| 2 | harden(node) | Basic | 0.8–1.2 | Proactive resilience before stress |
-| 3 | recover(node) | Basic | 0.6–1.0 | Restore a failed node |
-| 4 | isolate(node) | Intermediate | 0.3 | Stop cascade propagation |
-| 5 | reroute(src, tgt) | Intermediate | 0.6 | Alternate supply path |
-| 6 | prioritize(node) | Intermediate | 0 (cooldown) | Protect critical node this step |
-| 7 | deploy_repair_crew(node) | Intermediate | 1.5× recover | Fast repair when time-critical |
-| 8 | coordinate(node) | Intermediate | 0.4 | Fix observation delay |
-| 9 | shed_load(node) | Intermediate | 0.3 | Relieve overload pressure |
-| 10 | emergency_shutdown(node) | Hard | 0.2 | Controlled pre-failure shutdown |
-| 11 | cross_sector_bridge(s_a, s_b) | Hard | 1.5 | Cross-sector redundancy link |
-| 12 | patch_scada(node) | Hard | 0.8 | Counter active SCADA drain |
-| 13 | redistribute_load(n_a, n_b) | Hard | 0.5 | Balance overloaded nodes |
-| 14 | request_mutual_aid(sector) | Hard | 2.5 (once/ep) | Emergency sector-wide boost |
-| 15 | controlled_cascade(node) | Expert | 0 + grader penalty | Sacrifice one node to save many |
-| 16 | multi_sector_lockdown() | Expert | 2.0 | Freeze system during multi-sector spiral |
+## Prerequisites
 
-## 3. Observation Space
+### Backend
 
-What the agent sees includes:
-- nodes
-- health
-- load
-- failures
-- dependencies
+- Python 3.10+
+- `fastapi`
+- `uvicorn`
+- `openenv-core`
+- other Python dependencies from `pyproject.toml`
 
-In practice, each observation also includes important context for planning:
-- step index and max steps
-- remaining budget
-- weather forecast
-- active failures and pending recoveries
-- sector-level health summary
-- diagnostics block (critical failures, at-risk nodes, dependency alerts,
-  recommended recovery order, and system pressure)
-- upcoming stress level (`none`, `soon`, or `imminent`) so agents can time
-  proactive hardening before scheduled stress events
+### Frontend
 
-This makes the environment useful for both raw policy learning and
-analysis-friendly decision support experiments.
+- Node.js 18+ recommended
+- npm
 
-## 4. Reward Function (IMPORTANT)
+## Backend Setup
 
-Reward is based on:
-- maintaining system stability
-- minimizing cascading failures
-- protecting critical infrastructure
-- efficient resource usage
+From the repo root:
 
-IMPORTANT: this is where judges look closely.
-
-Reward design intent:
-- Encourages proactive resilience (timely hardening and safe coordination).
-- Rewards successful recoveries, especially in correct dependency order.
-- Penalizes newly failed nodes, cascade propagation, invalid actions, and
-  inaction under pressure.
-- Applies strong safety penalties for harmful critical actions (for example,
-  unsafe load shedding on hospital/critical nodes).
-- Uses terminal shaping for overall sector outcomes, while preserving dense
-  step-level signals for learning stability.
-
-Runtime reward contract:
-- Exposed step reward is normalized and clamped strictly to (0.0, 1.0) for evaluator compatibility.
-- Raw shaped reward is still available in observation metadata as `raw_reward`.
-- `reward_mode="uncapped"` exposes raw shaped reward directly.
-- `reward_mode="grpo"` exposes signed, scaled reward for GRPO and enables small
-  reward noise plus grader-aligned shaping.
-- `training_mode=True` disables early success/failure exits so training batches
-  compare fixed-length episodes.
-
-## 5. Setup Instructions
-
-```bash
+```powershell
 pip install -e .
 ```
 
-Alternative server-only install:
+If you already have the Python dependencies installed, you can go straight to running the server.
 
-```bash
-pip install -r server/requirements.txt
+## Frontend Setup
+
+From the repo root:
+
+```powershell
+cd ui
+npm.cmd install
 ```
 
-Required environment variables for inference:
-- API_BASE_URL
-- MODEL_NAME
-- GROQ_API_KEY (preferred)
+If PowerShell blocks `npm.ps1`, keep using `npm.cmd`.
 
-Optional fallback variables:
-- HF_TOKEN (legacy fallback if GROQ_API_KEY is not set)
-- ENV_BASE_URL (defaults to your HF Space URL and is used before Docker)
+## How To Run Everything Locally
 
-## 6. How to Run
+Open two terminals.
 
-Run the environment server (uv script entrypoint):
+### Terminal 1 - backend
 
-```bash
-uv run server
+From `cascade_gaurd_openEnv`:
+
+```powershell
+python server/app.py
 ```
 
-Alternative launch command:
+The backend starts on:
 
-```bash
-python -m cascade_guard.server.app
+```text
+http://localhost:8000
 ```
 
-Explicit uvicorn command:
+### Terminal 2 - frontend
 
-```bash
-python -m uvicorn cascade_guard.server.app:app --host 127.0.0.1 --port 8000
+From `ui`:
+
+```powershell
+cd ui
+npm.cmd run dev
 ```
 
-Health check:
+The frontend starts on:
 
-```bash
+```text
+http://localhost:8080
+```
+
+## Local Test Flow
+
+1. Start the backend.
+2. Start the frontend.
+3. Open `http://localhost:8080`.
+4. Launch a city from the modal.
+5. Confirm the UI banner shows a live OpenEnv connection.
+6. Use `Step`, `Reset`, or the action buttons to interact with the environment.
+
+If the backend is not reachable, the UI automatically switches to the scripted simulation fallback.
+
+## Frontend Environment Variables
+
+The frontend defaults to local URLs, so no env file is required for local development.
+
+Optional overrides:
+
+- `VITE_ENV_BASE`
+- `VITE_ENV_WS`
+
+Example:
+
+```powershell
+$env:VITE_ENV_BASE="http://localhost:8000"
+$env:VITE_ENV_WS="ws://localhost:8000/ws"
+npm.cmd run dev
+```
+
+## Verification Commands
+
+### Backend health
+
+```powershell
 curl http://localhost:8000/health
 ```
 
-Run baseline inference:
+### WebSocket smoke test
 
-```bash
+From the repo root:
+
+```powershell
+python test_ws.py
+```
+
+This validates that the server accepts a `reset` and a `step` call on the WebSocket protocol.
+
+### Frontend production build
+
+From the frontend folder:
+
+```powershell
+cd ui
+npm.cmd run build
+```
+
+## Inference and Training
+
+### Baseline inference
+
+From the repo root:
+
+```powershell
 python inference.py
 ```
 
-Run local GRPO training before pushing the environment:
+### Multi-seed evaluation
 
-```bash
-# From the repo root, open and run:
-jupyter notebook cascade_guard/training/CascadeGuard_GRPO_Colab.ipynb
-```
-
-The notebook trains against the local checkout directly. It does not require the
-server or the deployed Hugging Face Space. The training reset path is:
-
-```python
-env.reset(task_id=task_id, seed=seed, reward_mode="grpo", training_mode=True)
-```
-
-## 7. Baseline Inference and Reproducibility
-
-The baseline runner writes a reproducibility artifact to `baseline_results.json`
-by default (override with `BASELINE_RESULTS_PATH`).
-
-The artifact includes:
-- timestamp and model config
-- per-run records (task_id, seed, split, scenario index, score)
-- per-task summary (runs, mean/std/min/max)
-
-Recommended reproducibility run commands:
-
-```bash
-# Single-run baseline (train split, deterministic seed schedule)
+```powershell
+$env:EVAL_MODE="multiseed"
+$env:EVAL_SPLIT="holdout"
 python inference.py
-
-# Multi-seed evaluation (holdout split)
-EVAL_MODE=multiseed EVAL_SPLIT=holdout python inference.py
 ```
 
-Reference baseline snapshot (holdout, 2 seeds each):
+Switch `EVAL_SPLIT` as needed for your scenario split.
 
-| task_id | sample scores | mean |
-|---|---|---:|
-| task_easy | 0.8900, 0.8900 | 0.8900 |
-| task_medium | 0.3418, 0.3359 | 0.3389 |
-| task_hard | 0.3718, 0.3648 | 0.3683 |
-| task_gen_blackout | 0.7563, 0.7263 | 0.7413 |
-| task_cyberattack | 0.2480, 0.2797 | 0.2639 |
+### GRPO training
 
-## 8. Docker and Submission Hardening
+The training code lives under `training/`. Use the notebook and training scripts there for GRPO experiments.
 
-- Docker build context is constrained via `.dockerignore` to reduce noisy or
-  oversized uploads.
-- Run pre-submit checks before submission:
+## Frontend Scripts
 
-```bash
-./validate-submission.sh <your_hf_space_url>
+From `ui/`:
+
+- `npm.cmd run dev`
+- `npm.cmd run build`
+- `npm.cmd run build:dev`
+- `npm.cmd run lint`
+- `npm.cmd run test`
+- `npm.cmd run test:watch`
+
+## Troubleshooting
+
+### PowerShell blocks npm
+
+Use:
+
+```powershell
+npm.cmd install
+npm.cmd run dev
 ```
+
+### Frontend falls back to simulation
+
+Check:
+
+- backend is running on port `8000`
+- frontend is pointing to `ws://localhost:8000/ws`
+- no stale custom `VITE_ENV_BASE` or `VITE_ENV_WS` values are set
+
+### WebSocket connection refused
+
+Start the backend first, wait until it is listening on port `8000`, then refresh the frontend.
+
+### Vite build fails because dependencies are missing
+
+Run:
+
+```powershell
+cd ..\cascade-guard-core-main
+npm.cmd install
+```
+
+### Python server import errors
+
+Reinstall the backend in editable mode:
+
+```powershell
+pip install -e .
+```
+
+## Additional Docs
+
+- UI-specific docs: [ui/README.md](ui/README.md)
+- Run notes: [HOW_TO_RUN.md](HOW_TO_RUN.md)

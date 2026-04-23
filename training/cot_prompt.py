@@ -26,18 +26,22 @@ if TYPE_CHECKING:
 
 
 SYSTEM_PROMPT = """\
-You are an AI infrastructure coordinator managing a cross-sector critical infrastructure network.
+You are an AI infrastructure coordinator managing a real-world cross-sector critical infrastructure network.
 Your goal is to keep power, water, hospital, and telecom systems operational during cascading failures.
+
+Each node in the network corresponds to a REAL infrastructure site (e.g. "KEM Hospital Parel",
+"Tata Power Trombay Plant", "BT Tower"). Node IDs are shown alongside their real names.
+Prioritise named hospitals above all other nodes.
 
 ## Network Rules
 
 **Dependency order is mandatory:**
 - You CANNOT recover a node until ALL its upstream suppliers are operational.
-- Example: WATER_TREAT_1 depends on POWER_DIST_1. Recover POWER_DIST_1 FIRST.
+- Example: Worli Water Treatment Plant depends on Dadar Distribution Centre. Recover power FIRST.
 - Wrong order = wasted action + penalty.
 
 **Priority hierarchy:**
-1. Hospital nodes (HOSP_*, EMERG_*) — protect at all costs
+1. Hospital nodes (HOSP_*, EMERG_*) — protect at all costs (real patients depend on them)
 2. High-centrality backbone nodes (GEN > TRANS > DIST > leaf nodes)
 3. Nodes that unlock multiple failed downstream dependents
 
@@ -61,16 +65,16 @@ Your goal is to keep power, water, hospital, and telecom systems operational dur
 - emergency_shutdown(NODE_ID): controlled shutdown when health < 30% (0.2 budget).
   Tier 3 hint: use when a dying node would cascade; beats letting it fail uncontrolled.
 - cross_sector_bridge(SECTOR_A,SECTOR_B): 3-step cross-sector redundancy link (1.5 budget).
-  Tier 3 hint: bridge telecom→hospital during hospital crisis to restore observability.
+  Tier 3 hint: bridge telecom\u2192hospital during hospital crisis to restore observability.
 - patch_scada(NODE_ID): stops active SCADA anomaly drain (0.8 budget).
   Tier 3 hint: use immediately in task_cyberattack once SCADA drain starts; every step of delay compounds.
 - redistribute_load(NODE_A,NODE_B): moves 0.2 load from overloaded to underloaded same-sector node (0.5 budget).
   Tier 3 hint: use before a node hits 0.9 load to prevent overload cascade.
 - request_mutual_aid(SECTOR): +0.2 health to all nodes in sector; ONCE per episode (2.5 budget).
-  Tier 3 hint: emergency reserve — only when a full sector is in unrecoverable freefall.
+  Tier 3 hint: emergency reserve \u2014 only when a full sector is in unrecoverable freefall.
 - controlled_cascade(NODE_ID): sacrifice node takes -0.5 health; neighbors gain +0.15 (0 budget, grader penalty).
   Tier 4 hint: pick the node with the fewest downstream dependents and lowest centrality.
-- multi_sector_lockdown(null): freeze entire system 2 steps — no cascade, no recovery (2.0 budget).
+- multi_sector_lockdown(null): freeze entire system 2 steps \u2014 no cascade, no recovery (2.0 budget).
   Tier 4 hint: last resort when simultaneous multi-sector failure is spiraling out of control.
 
 **Budget management:**
@@ -87,7 +91,7 @@ You MUST respond in EXACTLY this format (two parts, nothing else):
 3. Upstream dependencies for each failed: [trace chain]
 4. Hospital status: [health values]
 5. At-risk nodes: [from diagnostics]
-6. Budget: [remaining] — what can I afford?
+6. Budget: [remaining] \u2014 what can I afford?
 7. Radius coverage: [which nodes provide backup]
 8. Best action: [reason why this is optimal vs waiting]
 </think>
@@ -120,7 +124,7 @@ Keep all nodes operational. Hospitals are highest priority.
 RULES:
 - Recover nodes in dependency order (upstream first).
 - Harden nodes before storms hit. Each harden costs 2.0 budget.
-- DO NOT wait when there are active failures — this causes cascade debt.
+- DO NOT wait when there are active failures \u2014 this causes cascade debt.
 - Telecom coverage maintains sensor confidence. Protect telecom nodes.
 - If recovery order is blocked, isolate a failed upstream node to stop cascade spread.
 
@@ -179,20 +183,22 @@ def build_user_prompt(obs: "CascadeObservation") -> str:
     )
     lines.append(f"Weather: {obs.weather_forecast}")
     if consec >= 2:
-        lines.append(f"WARNING: Consecutive waits: {consec} — cascade debt is accumulating!")
+        lines.append(f"WARNING: Consecutive waits: {consec} \u2014 cascade debt is accumulating!")
     lines.append("")
 
-    # Node table
+    # Node table — show real_name alongside node_id when available
     lines.append("## Node Status")
-    lines.append("| Node | Sector | Health | Load | Operational | Hardened | Delayed | Confidence |")
-    lines.append("|---|---|---|---|---|---|---|---|")
+    lines.append("| Node ID | Real Name | Sector | Health | Load | Operational | Hardened | Delayed | Conf |")
+    lines.append("|---|---|---|---|---|---|---|---|---|")
     for n in sorted(obs.nodes, key=lambda x: x.node_id):
         delayed    = getattr(n, "observation_delayed", False)
         confidence = getattr(n, "observation_confidence", 1.0)
         conf_str   = f"{confidence:.2f}" if confidence < 1.0 else "1.00"
         op_str     = "YES" if n.is_operational else "**FAILED**"
+        real_name  = getattr(n, "real_name", "") or ""
+        name_col   = real_name if real_name else "-"
         lines.append(
-            f"| {n.node_id} | {n.sector} | {n.health:.2f} | "
+            f"| {n.node_id} | {name_col} | {n.sector} | {n.health:.2f} | "
             f"{n.load:.2f} | {op_str} | "
             f"{'yes' if n.is_hardened else 'no'} | "
             f"{'YES' if delayed else 'no'} | {conf_str} |"
@@ -261,6 +267,7 @@ def make_training_prompt(obs: "CascadeObservation", env=None, grpo_mode: bool = 
     The legal action list dramatically reduces invalid actions from the 71% seen
     in baseline runs. It shows the model exactly what moves are valid right now.
     """
+    # Back-compat: older callers passed grpo_mode as the second positional arg
     if isinstance(env, bool):
         grpo_mode = env
         env = None
@@ -374,7 +381,7 @@ def parse_action_from_response(response: str, obs: Optional["CascadeObservation"
     if action_type not in VALID_ACTIONS:
         return CascadeAction(action_type="wait", target_node_id=None)
 
-    parameters = {}
+    parameters: dict = {}
     if target_parsed and "," in target_parsed:
         parts = [p.strip() for p in target_parsed.split(",")]
         if action_type == "reroute" and len(parts) >= 2:

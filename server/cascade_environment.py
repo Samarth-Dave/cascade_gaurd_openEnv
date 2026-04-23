@@ -59,10 +59,11 @@ STEP_REWARD_EPS: float = 1e-4
 class _NodeState:
     """Internal mutable node state (server-side ground truth)."""
 
-    def __init__(self, node_id: str, sector: str, is_critical: bool) -> None:
+    def __init__(self, node_id: str, sector: str, is_critical: bool, real_name: str = "") -> None:
         self.node_id = node_id
         self.sector = sector
         self.is_critical = is_critical
+        self.real_name: str = real_name   # e.g. "KEM Hospital Parel", "BT Tower"
         self.health: float = 1.0
         self.load: float = 0.5
         self.is_operational: bool = True
@@ -70,7 +71,7 @@ class _NodeState:
         self.in_recovery: bool = False
 
     def copy(self) -> "_NodeState":
-        n = _NodeState(self.node_id, self.sector, self.is_critical)
+        n = _NodeState(self.node_id, self.sector, self.is_critical, self.real_name)
         n.health = self.health
         n.load = self.load
         n.is_operational = self.is_operational
@@ -242,7 +243,12 @@ class CascadeEnvironment(Environment):
 
         self._node_states = {}
         for n in cfg["nodes"]:
-            ns = _NodeState(n["node_id"], n["sector"], n["is_critical"])
+            ns = _NodeState(
+                n["node_id"],
+                n["sector"],
+                n["is_critical"],
+                real_name=n.get("real_name", ""),   # real-world name from OSM/task data
+            )
             ns.load = round(self._rng.uniform(0.45, 0.65), 3)
             self._node_states[n["node_id"]] = ns
 
@@ -1461,6 +1467,7 @@ class CascadeEnvironment(Environment):
                     is_hardened=ns.is_hardened,
                     observation_delayed=is_delayed,
                     is_critical=ns.is_critical,
+                    real_name=ns.real_name,             # real-world infrastructure name
                     lat=n_lat,
                     lon=n_lon,
                     service_radius_km=n_radius,

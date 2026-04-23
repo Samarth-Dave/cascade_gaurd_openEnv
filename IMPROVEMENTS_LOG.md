@@ -4,6 +4,43 @@ A versioned record of every improvement sprint.
 
 ---
 
+## v2.4 — 2026-04-22 | Real-World OSM Infrastructure Upgrade & UI
+
+### What Changed
+
+This sprint finalizes the infrastructure upgrade to a real-world, OpenStreetMap-backed environment for GRPO RL training. The focus was on replacing the fictional topologies with real city-scale infrastructure maps and ensuring accurate propagation of real-world node names.
+
+#### New Tasks Added (Phase 2 Curriculum)
+
+| Task | Difficulty | Description |
+|------|------------|-------------|
+| `task_osm_london` | Hard | London: Manageable topology as the entry point to OSM cities. |
+| `task_osm_bangalore`| Hard | Bangalore: Well-connected grid topology. |
+| `task_osm_delhi` | Hard | Delhi: Dense urban graph. |
+| `task_osm_mumbai` | Hard | Mumbai: Familiar sector names with real coordinates. |
+| `task_osm_nyc` | Hard+ | NYC: Highly complex inter-borough topology. |
+| `task_osm_tokyo` | Hardest | Tokyo: Dense metro, the most difficult real-world task. |
+
+#### Major Improvements
+
+| Component | File | Detail |
+|-----------|------|--------|
+| OSM Data Fetching | `scripts/fetch_real_nodes.py` | Query OpenStreetMap via Overpass API to extract real hospitals, power plants, and telecom towers. |
+| Node Propagation | `models.py`, `tasks.py` | Nodes now support a `real_name` attribute (e.g., "KEM Hospital") passed throughout the environment. |
+| Prompt Clarity | `training/cot_prompt.py` | Appended a `Real Name` column to the observation table so the GRPO agent protects recognizable assets. |
+| Curriculum Learning | `training/curriculum_scheduler.py` | Added Phase 2: agents graduate from fictional Phase 1 tasks before tackling Phase 2 real-world OSM tasks. |
+| Adversarial Logic | `adversarial_attacker.py` | Updated attacker to prioritize high-value named assets (e.g., hospitals and power plants). |
+| Server Extensions | `server/app.py`, `Dockerfile` | Expanded the FastAPI server to support real-time querying or serving of OSM-backed scenarios. |
+| OpenEnv Config | `openenv.yaml` | Registered all new `task_osm_*` scenarios for OpenEnv compatibility. |
+
+#### Why These Changes Improve Training
+
+- **Real-World Relevance:** Agents now train on real city graphs (Tokyo, NYC, London), learning domain-specific infrastructure resilience instead of abstract graph solving.
+- **Improved Grounding:** The inclusion of `real_name` gives the language model stronger semantic grounding. Protecting "Bellevue Hospital" invokes stronger safety priors than protecting "node_3".
+- **Progressive Difficulty:** The curriculum is now smoothly staggered from simple single-sector fictional graphs up to dense, multi-borough real-world networks.
+
+---
+
 ## v2.3 — 2026-04-22 | Remaining Plan Execution (Phases 1–5)
 
 ### Scope Completed

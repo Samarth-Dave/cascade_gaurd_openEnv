@@ -16,12 +16,15 @@ class NodeStatus(BaseModel):
     is_hardened: bool
     observation_delayed: bool
     is_critical: bool
+    # Real-world identity (populated from OSM/task data)
+    real_name: str = ""              # e.g. "KEM Hospital Parel", "BT Tower"
     # Geo fields (optional — populated when task has coordinates)
     lat: float = 0.0              # Latitude in decimal degrees
     lon: float = 0.0              # Longitude in decimal degrees
     service_radius_km: float = 0.0  # Service coverage radius in km
     observation_confidence: float = 1.0  # 0.0–1.0; drops under telecom outage
     coverage_quality: float = 1.0  # How well this node is backed up by neighbours
+
 
 
 class EdgeStatus(BaseModel):

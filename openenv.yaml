@@ -1,7 +1,71 @@
 spec_version: 1
-name: cascade_guard
+name: cascade-guard
+version: 0.4.0
+description: >
+  Real-world city infrastructure resilience environment.
+  A GRPO-trained AI defends real hospitals, substations, and water pumping
+  stations against adversarial cascade failures. Graph built from
+  OpenStreetMap real geodata. 6 cities: London, Mumbai, Bangalore, Delhi,
+  New York, Tokyo. 13 task configs including 6 real-world OSM city tasks.
+author: CascadeGuard Team
+license: BSD-3-Clause
+python_requires: ">=3.11"
+
 type: space
 runtime: fastapi
 app: server.app:app
 port: 8000
 
+environment:
+  action_space:
+    - harden(target_node_id)
+    - shed_load(target_node_id)
+    - coordinate(target_node_id?)
+    - recover(target_node_id)
+    - isolate(target_node_id)
+    - wait()
+    - reroute(source, target)
+    - prioritize(target_node_id)
+    - deploy_repair_crew(target_node_id)
+    - emergency_shutdown(target_node_id)
+    - cross_sector_bridge(sector_a, sector_b)
+    - patch_scada(target_node_id)
+    - redistribute_load(node_a, node_b)
+    - request_mutual_aid(sector)
+    - controlled_cascade(target_node_id)
+    - multi_sector_lockdown()
+  observation_space:
+    - nodes: list[NodeStatus]           # real lat/lon + status + real_name
+    - edges: list[EdgeStatus]           # graph topology
+    - sector_summary: dict[str, float]  # 0-1 health per sector
+    - budget_remaining: float
+    - active_failures: list[str]
+    - agent_prompt: str                 # LLM-ready text (via info field)
+    - diagnostics: ObservationDiagnostics
+  reward_range: [-1.0, 1.0]
+  max_steps: 30
+
+tasks:
+  - task_easy
+  - task_medium
+  - task_hard
+  - task_gen_blackout
+  - task_cyberattack
+  - task_real_city
+  - task_osm_london
+  - task_osm_mumbai
+  - task_osm_bangalore
+  - task_osm_delhi
+  - task_osm_nyc
+  - task_osm_tokyo
+
+tags:
+  - infrastructure
+  - resilience
+  - cascade-failure
+  - real-world
+  - openstreetmap
+  - grpo
+  - curriculum-learning
+  - multi-agent
+  - geo-aware

@@ -35,3 +35,8 @@ __pycache__/
 # Dev files
 .vscode
 .idea
+
+# Frontend build artifacts
+ui/node_modules/
+ui/dist/
+ui/.lovable/
