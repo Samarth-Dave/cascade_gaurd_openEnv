@@ -15,6 +15,7 @@ import { CITIES, cityByKey, type CityKey } from '@/cascade/data/cities';
 import { SCRIPTED_EPISODE, TOTAL_STEPS } from '@/cascade/data/episode';
 import type { CGObservation, EventLine, TimelineEntry, AgentTurn } from '@/cascade/data/types';
 import { useEnvSocket } from '@/cascade/hooks/useEnvSocket';
+import { ENV_BASE } from '@/cascade/config/env';
 import {
   deriveLivePresentation,
   normalizeObservation,
@@ -24,6 +25,65 @@ import { useReveal } from '@/cascade/hooks/useReveal';
 const SPEED_MS: Record<number, number> = { 0.5: 2400, 1: 1400, 2: 700, 4: 300 };
 const MAX_EVENT_LINES = 20;
 const MAX_LOG_LINES = 200;
+const UI_FLOW_DEBUG = import.meta.env.DEV;
+
+interface BackendLegalAction {
+  action_type: string;
+  target_node_id: string | null;
+  parameters: Record<string, unknown>;
+}
+
+const FALLBACK_ACTION_TYPES = [
+  'recover', 'harden', 'shed_load', 'coordinate', 'wait',
+  'isolate', 'reroute', 'prioritize', 'deploy_repair_crew',
+  'emergency_shutdown', 'cross_sector_bridge', 'patch_scada',
+  'redistribute_load', 'request_mutual_aid', 'controlled_cascade', 'multi_sector_lockdown',
+];
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null;
+
+const toLegalAction = (value: unknown): BackendLegalAction | null => {
+  if (!isRecord(value)) return null;
+  if (typeof value.action_type !== 'string' || value.action_type.length === 0) return null;
+  return {
+    action_type: value.action_type,
+    target_node_id: typeof value.target_node_id === 'string' ? value.target_node_id : null,
+    parameters: isRecord(value.parameters) ? value.parameters : {},
+  };
+};
+
+const actionCatalogFromMetadata = (metadata?: Record<string, unknown>) => {
+  // Bug 3 fix: always start with the full FALLBACK_ACTION_TYPES (all 16) as base.
+  // Metadata catalogs from older backend versions may only carry a subset.
+  const sampleMap: Record<string, BackendLegalAction> = {};
+  if (isRecord(metadata?.legal_action_samples)) {
+    for (const [actionType, raw] of Object.entries(metadata.legal_action_samples)) {
+      const parsed = toLegalAction(raw);
+      if (parsed) sampleMap[actionType] = parsed;
+    }
+  }
+
+  // Merge: FALLBACK_ACTION_TYPES covers all 16 guaranteed actions;
+  // any extra types from the backend catalog are appended.
+  const backendCatalog = Array.isArray(metadata?.action_catalog)
+    ? metadata.action_catalog.filter((v): v is string => typeof v === 'string')
+    : [];
+  const merged = [
+    ...FALLBACK_ACTION_TYPES,
+    ...backendCatalog.filter((t) => !FALLBACK_ACTION_TYPES.includes(t)),
+  ];
+
+  return {
+    actionTypes: merged,
+    actionSamples: sampleMap,
+  };
+};
+
+const uiFlowLog = (...args: unknown[]) => {
+  if (!UI_FLOW_DEBUG) return;
+  console.debug('[Index]', ...args);
+};
 
 export default function Index() {
   useReveal();
@@ -31,6 +91,8 @@ export default function Index() {
   const [activeCityKey, setActiveCityKey] = useState<CityKey>('london');
   const [selectedCityKey, setSelectedCityKey] = useState<CityKey>('london');
   const city = cityByKey(activeCityKey);
+  // Fix 2: track the task chosen in the city modal (defaults to city.taskId)
+  const [selectedTaskId, setSelectedTaskId] = useState<string>(city.taskId);
   const [hasLaunched, setHasLaunched] = useState(false);
   const [modalOpen, setModalOpen] = useState(true);
   const [stepIdx, setStepIdx] = useState(0);
@@ -47,9 +109,35 @@ export default function Index() {
   const [defenseScore, setDefenseScore] = useState(SCRIPTED_EPISODE[0].defenseScore);
   const [whatsHappening, setWH] = useState(SCRIPTED_EPISODE[0].whatsHappening);
   const [obs, setObs] = useState<CGObservation>(normalizeObservation(SCRIPTED_EPISODE[0].obs));
+  const [backendActionCatalog, setBackendActionCatalog] = useState<string[]>([]);
   const liveStepsRef = useRef<Set<number>>(new Set());
   const prevConnStateRef = useRef<'connecting' | 'live' | 'sim' | 'error'>('sim');
   const playRef = useRef<number | null>(null);
+  // Fix 3: safety timeout ref — fires 4 s after busy is set to true with no response
+  const busyTimeoutRef = useRef<number | null>(null);
+
+  const clearBusyTimeout = useCallback(() => {
+    if (busyTimeoutRef.current !== null) {
+      window.clearTimeout(busyTimeoutRef.current);
+      busyTimeoutRef.current = null;
+    }
+  }, []);
+
+  const setBusyWithTimeout = useCallback((value: boolean) => {
+    if (!value) {
+      clearBusyTimeout();
+      setBusy(false);
+      return;
+    }
+
+    clearBusyTimeout();
+    busyTimeoutRef.current = window.setTimeout(() => {
+      busyTimeoutRef.current = null;
+      console.warn('[CascadeGuard] busy timeout — forcing reset');
+      setBusy(false);
+    }, 4000);
+    setBusy(true);
+  }, [clearBusyTimeout]);
 
   const applyScripted = useCallback((idx: number, replace = false) => {
     const scripted = SCRIPTED_EPISODE[Math.max(0, Math.min(SCRIPTED_EPISODE.length - 1, idx))];
@@ -80,10 +168,10 @@ export default function Index() {
 
   const resetToSimulation = useCallback(() => {
     liveStepsRef.current.clear();
-    setBusy(false);
+    setBusyWithTimeout(false);
     setPlaying(false);
     applyScripted(0, true);
-  }, [applyScripted]);
+  }, [applyScripted, setBusyWithTimeout]);
 
   const appendEventLines = useCallback((entries: EventLine[], replace = false) => {
     setEvents((prev) =>
@@ -103,8 +191,13 @@ export default function Index() {
 
     setObs(normalized);
     setStepIdx(normalized.step ?? 0);
+    // Fix 3: response arrived — cancel the 4-second safety timeout and clear busy
+    clearBusyTimeout();
     setBusy(false);
-    if (normalized.done) setPlaying(false);
+    // Only stop auto-play when we've genuinely reached the episode end (step >= max_steps).
+    // Do NOT stop on obs.done alone — the backend sets done=true during crisis_peak even
+    // before step 30, which was causing the play button to stop prematurely (Bug 2 fix).
+    if (normalized.step >= normalized.max_steps) setPlaying(false);
 
     setAttacker(live.attacker);
     setDefender(live.defender);
@@ -122,10 +215,25 @@ export default function Index() {
         ? [0, normalized.reward].slice(-60)
         : [...prev, normalized.reward].slice(-60),
     );
-  }, [appendEventLines]);
+
+    const coordsCount = normalized.nodes.filter(
+      (node) => Number.isFinite(node.lat) && Number.isFinite(node.lon),
+    ).length;
+    const legalActionTypes = Array.isArray(normalized.metadata?.legal_action_types)
+      ? normalized.metadata.legal_action_types
+      : [];
+    uiFlowLog('socket -> state', {
+      step: normalized.step,
+      reward: normalized.reward,
+      nodes: normalized.nodes.length,
+      nodes_with_coords: coordsCount,
+      cascade_edges: normalized.edges.filter((edge) => edge.kind === 'cascade').length,
+      legal_action_types: legalActionTypes,
+    });
+  }, [appendEventLines, clearBusyTimeout]);
 
   const handleSocketError = useCallback((message: string) => {
-    setBusy(false);
+    setBusyWithTimeout(false);
     appendEventLines([
       {
         ts: new Date().toTimeString().slice(0, 8),
@@ -133,9 +241,11 @@ export default function Index() {
         msg: message,
       },
     ]);
-  }, [appendEventLines]);
+  }, [appendEventLines, setBusyWithTimeout]);
 
-  const sock = useEnvSocket(city.taskId, hasLaunched, handleObs, handleSocketError);
+  // Fix 2: use the user-selected task id (from CityModal dropdown) instead of the
+  // hardcoded city.taskId so the episode respects the chosen difficulty/scenario.
+  const sock = useEnvSocket(selectedTaskId, hasLaunched, handleObs, handleSocketError);
   const connState = sock.state;
   const sendAction = sock.send;
   const resetSocket = sock.reset;
@@ -160,12 +270,69 @@ export default function Index() {
       resetToSimulation();
     }
     if (connState !== 'live') {
-      setBusy(false);
+      setBusyWithTimeout(false);
     }
 
     prevConnStateRef.current = connState;
-  }, [connState, hasLaunched, resetToSimulation]);
+  }, [connState, hasLaunched, resetToSimulation, setBusyWithTimeout]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadActions = async () => {
+      try {
+        const response = await fetch(`${ENV_BASE}/actions`);
+        if (!response.ok) return;
+
+        const payload = await response.json();
+        const actions = Array.isArray(payload?.actions)
+          ? payload.actions.filter((value: unknown): value is string => typeof value === 'string')
+          : [];
+        if (!cancelled && actions.length > 0) {
+          setBackendActionCatalog(actions);
+          uiFlowLog('loaded action catalog', { count: actions.length, actions: actions.slice(0, 10) });
+        }
+      } catch (error) {
+        uiFlowLog('action catalog fetch failed', String(error));
+      }
+    };
+
+    void loadActions();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Fix 3: 4-second busy safety timeout — set once when we enter busy state,
+  // cancelled in handleObs when a real WS response arrives.
+  useEffect(() => {
+    if (!busy) {
+      // Not busy — ensure any lingering timeout is cleared
+      if (busyTimeoutRef.current !== null) {
+        window.clearTimeout(busyTimeoutRef.current);
+        busyTimeoutRef.current = null;
+      }
+      return;
+    }
+
+    if (busyTimeoutRef.current === null) busyTimeoutRef.current = window.setTimeout(() => {
+      busyTimeoutRef.current = null;
+      console.warn('[CascadeGuard] busy timeout — forcing reset');
+      setBusy(false);
+    }, 4000);
+
+    return () => {
+      if (busyTimeoutRef.current !== null) {
+        window.clearTimeout(busyTimeoutRef.current);
+        busyTimeoutRef.current = null;
+      }
+    };
+  }, [busy]);
+
+  // Play loop — no longer stops on obs.done alone.
+  // The backend sets done=true during crisis_peak before step 30 which was halting
+  // the episode. We now only stop at step >= max_steps (true episode end).
   useEffect(() => {
     if (!playing) {
       if (playRef.current) window.clearTimeout(playRef.current);
@@ -174,10 +341,13 @@ export default function Index() {
 
     playRef.current = window.setTimeout(() => {
       if (connState === 'live') {
-        if (busy || obs.done) {
-          if (obs.done) setPlaying(false);
+        // Stop only when we've genuinely hit the step limit.
+        if (obs.step >= obs.max_steps) {
+          setPlaying(false);
           return;
         }
+        // If busy, wait — the 4-second watchdog (above) will unblock us if WS drops.
+        if (busy) return;
 
         appendEventLines([
           {
@@ -186,11 +356,12 @@ export default function Index() {
             msg: '[STEP] Advance one step (wait)',
           },
         ]);
-        setBusy(true);
+        setBusyWithTimeout(true);
         sendAction('wait', null);
         return;
       }
 
+      // Simulation mode — advance scripted episode
       setStepIdx((currentStep) => {
         const nextStep = Math.min(TOTAL_STEPS - 1, currentStep + 1);
         applyScripted(nextStep);
@@ -202,7 +373,7 @@ export default function Index() {
     return () => {
       if (playRef.current) window.clearTimeout(playRef.current);
     };
-  }, [appendEventLines, applyScripted, busy, connState, obs.done, playing, sendAction, speed]);
+  }, [appendEventLines, applyScripted, busy, connState, obs.step, obs.max_steps, playing, sendAction, setBusyWithTimeout, speed]);
 
   const onStep = () => {
     setPlaying(false);
@@ -214,7 +385,7 @@ export default function Index() {
           msg: '[STEP] Advance one step (wait)',
         },
       ]);
-      setBusy(true);
+      setBusyWithTimeout(true);
       sendAction('wait', null);
       return;
     }
@@ -228,7 +399,7 @@ export default function Index() {
 
   const onReset = () => {
     setPlaying(false);
-    setBusy(false);
+    setBusyWithTimeout(false);
     liveStepsRef.current.clear();
 
     if (connState === 'live') {
@@ -252,7 +423,11 @@ export default function Index() {
     resetToSimulation();
   };
 
-  const onDispatch = (action: string, target: string | null) => {
+  const onDispatch = (
+    action: string,
+    target: string | null,
+    parameters: Record<string, unknown> = {},
+  ) => {
     if (connState === 'live') {
       appendEventLines([
         {
@@ -261,8 +436,8 @@ export default function Index() {
           msg: `[DISPATCH] ${action}${target ? ` -> ${target}` : ''}`,
         },
       ]);
-      setBusy(true);
-      sendAction(action, target);
+      setBusyWithTimeout(true);
+      sendAction(action, target, parameters);
       return;
     }
 
@@ -298,6 +473,15 @@ export default function Index() {
   );
   const nodesAtRisk =
     obs.diagnostics?.at_risk_nodes?.length || obs.nodes.filter((node) => node.health < 0.5).length;
+
+  const { actionTypes: availableActionTypes, actionSamples } = useMemo(
+    () => actionCatalogFromMetadata(obs.metadata),
+    [obs.metadata],
+  );
+
+  const dispatchActionTypes = backendActionCatalog.length > 0
+    ? backendActionCatalog
+    : availableActionTypes;
 
   const dl = (filename: string, content: string, type = 'text/plain;charset=utf-8') => {
     const blob = new Blob([content], { type });
@@ -502,16 +686,17 @@ export default function Index() {
         selected={selectedCityKey}
         onClose={() => setModalOpen(false)}
         onSelect={setSelectedCityKey}
-        onLaunch={(key) => {
-          const relaunchSameCity = hasLaunched && key === activeCityKey;
+        onLaunch={(key, taskId) => {
+          const relaunchSameCity = hasLaunched && key === activeCityKey && taskId === selectedTaskId;
           setSelectedCityKey(key);
           setActiveCityKey(key);
+          setSelectedTaskId(taskId);
           setHasLaunched(true);
           setModalOpen(false);
           if (relaunchSameCity) {
             liveStepsRef.current.clear();
             resetToSimulation();
-            reconnectSocket(cityByKey(key).taskId);
+            reconnectSocket(taskId);
           }
         }}
       />
@@ -536,6 +721,8 @@ export default function Index() {
         onReset={onReset}
         onSpeed={setSpeed}
         onDispatch={onDispatch}
+        availableActionTypes={dispatchActionTypes}
+        actionSamples={actionSamples}
         busy={busy}
         whatsHappening={whatsHappening}
         episodeId="042"

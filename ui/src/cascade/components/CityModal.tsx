@@ -1,18 +1,105 @@
+import { useState, useEffect } from 'react';
 import { CITIES, type City, type CityKey } from '../data/cities';
-import { ENV_WS } from '../config/env';
+import { ENV_BASE, ENV_WS } from '../config/env';
+
+interface TaskOption {
+  id: string;
+  label: string;
+  city?: string;
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null;
+
+const taskLabel = (task: Record<string, unknown>, id: string) => {
+  const name = task.name ?? task.title ?? task.description;
+  return typeof name === 'string' && name.trim().length > 0 ? `${id} - ${name.trim()}` : id;
+};
+
+const taskOptionsFromPayload = (payload: unknown): TaskOption[] => {
+  const rawTasks = Array.isArray(payload)
+    ? payload
+    : isRecord(payload) && Array.isArray(payload.tasks)
+      ? payload.tasks
+      : isRecord(payload) && isRecord(payload.tasks)
+        ? Object.entries(payload.tasks).map(([id, task]) => isRecord(task) ? { id, ...task } : id)
+        : [];
+
+  return rawTasks.reduce<TaskOption[]>((options, raw) => {
+    if (typeof raw === 'string') {
+      options.push({ id: raw, label: raw });
+      return options;
+    }
+    if (!isRecord(raw)) return options;
+
+    const id = raw.task_id ?? raw.taskId ?? raw.id ?? raw.key;
+    if (typeof id !== 'string' || id.trim().length === 0) return options;
+    const trimmedId = id.trim();
+    const city = typeof raw.city === 'string' ? raw.city : undefined;
+    options.push({ id: trimmedId, label: taskLabel(raw, trimmedId), city });
+    return options;
+  }, []);
+};
 
 interface Props {
   open: boolean;
   selected: CityKey;
   onClose: () => void;
   onSelect: (k: CityKey) => void;
-  onLaunch: (k: CityKey) => void;
+  /** Called with the city key AND the chosen task id */
+  onLaunch: (k: CityKey, taskId: string) => void;
 }
 
 export function CityModal({ open, selected, onClose, onSelect, onLaunch }: Props) {
-  if (!open) return null;
-
   const sel: City = CITIES.find((city) => city.key === selected) ?? CITIES[0];
+  const [tasks, setTasks] = useState<TaskOption[]>(() =>
+    CITIES.map((city) => ({ id: city.taskId, label: city.taskId })),
+  );
+
+  // Local task state — resets to city default whenever selected city changes
+  const [taskId, setTaskId] = useState<string>(sel.taskId);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadTasks = async () => {
+      try {
+        const response = await fetch(`${ENV_BASE}/tasks`);
+        if (!response.ok) return;
+
+        const options = taskOptionsFromPayload(await response.json());
+        // Filter to tasks that belong to the selected city, keeping the city's
+        // default task even if its city field is absent (legacy task_* configs).
+        const filtered = options.filter(t =>
+          !t.city || t.city === sel.key || t.id === sel.taskId
+        );
+        if (!cancelled && filtered.length > 0) {
+          setTasks(filtered);
+        }
+      } catch (error) {
+        if (!cancelled && import.meta.env.DEV) {
+          console.warn('[CityModal] task fetch failed', error);
+        }
+      }
+    };
+
+    void loadTasks();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selected, sel.key, sel.taskId]);
+
+  useEffect(() => {
+    // When a different city is picked, default its task to its own OSM task.
+    if (open) setTaskId(sel.taskId);
+  }, [open, selected, sel.taskId]);
+
+  const taskOptions = tasks.some((task) => task.id === sel.taskId)
+    ? tasks
+    : [{ id: sel.taskId, label: sel.taskId }, ...tasks];
+
+  if (!open) return null;
 
   return (
     <div className="fixed inset-0 z-[1000] flex items-center justify-center p-4">
@@ -63,11 +150,31 @@ export function CityModal({ open, selected, onClose, onSelect, onLaunch }: Props
             );
           })}
         </div>
+
+        {/* Task selector */}
+        <div className="mb-4">
+          <label className="block font-mono text-[10px] uppercase tracking-wider text-foreground/55 mb-1.5">
+            Task
+          </label>
+          <select
+            id="city-modal-task-select"
+            value={taskId}
+            onChange={(e) => setTaskId(e.target.value)}
+            className="w-full h-9 px-3 rounded-lg border border-foreground/15 bg-background text-sm font-mono text-foreground focus:outline-none focus:ring-2 focus:ring-[hsl(var(--accent))]/40"
+          >
+            {taskOptions.map((task) => (
+              <option key={task.id} value={task.id}>
+                {task.label}{task.id === sel.taskId ? '  (default)' : ''}
+              </option>
+            ))}
+          </select>
+        </div>
+
         <button
-          onClick={() => onLaunch(selected)}
+          onClick={() => onLaunch(selected, taskId)}
           className="h-11 w-full rounded-xl bg-foreground text-sm font-semibold text-background transition-colors hover:bg-[hsl(var(--accent))]"
         >
-          Launch Episode - {sel.name}
+          Launch Episode — {sel.name} / {taskId}
         </button>
       </div>
     </div>

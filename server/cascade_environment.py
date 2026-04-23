@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Set
 from openenv.core.env_server import Environment
 
 from cascade_guard.models import (
+    ALLOWED_ACTION_TYPES,
     CascadeAction,
     CascadeObservation,
     CascadeState,
@@ -900,6 +901,13 @@ class CascadeEnvironment(Environment):
         reward_components = dict(getattr(self, "_last_reward_components", {}))
         reward_components["r_action_bonus"] = round(action_bonus, 4)
 
+        legal_actions = self.get_legal_actions()
+        legal_action_samples: Dict[str, dict] = {}
+        for candidate in legal_actions:
+            action_type = str(candidate.get("action_type", ""))
+            if action_type and action_type not in legal_action_samples:
+                legal_action_samples[action_type] = candidate
+
         info: Dict[str, Any] = {
             "step": self._step,
             "newly_failed": newly_failed,
@@ -920,7 +928,14 @@ class CascadeEnvironment(Environment):
             "consecutive_waits": self._consecutive_waits,
             "narrative_phase": self._narrative_phase,
             "isolated_nodes": sorted(self._isolated_nodes),
-            "legal_actions_count": len(self.get_legal_actions()),
+            "action_catalog": list(ALLOWED_ACTION_TYPES),
+            "legal_actions_count": len(legal_actions),
+            "legal_action_types": sorted({
+                str(action.get("action_type", ""))
+                for action in legal_actions
+                if action.get("action_type")
+            }),
+            "legal_action_samples": legal_action_samples,
             "state_features": self.get_state_features(),
         }
         info.update(reward_components)
@@ -1775,14 +1790,17 @@ class CascadeEnvironment(Environment):
         return r
 
     def _check_done(self) -> bool:
-        # Condition 1: time limit
-        if self._step >= self._max_steps - 1:
+        # Condition 1: time limit — step is incremented AFTER this call so
+        # >= max_steps fires on the step that would be the (max_steps+1)-th.
+        if self._step >= self._max_steps:
             return True
 
         if self._training_mode:
             return False
 
-        # Condition 2: catastrophic sustained blackout (3 consecutive steps)
+        # Condition 2: catastrophic sustained blackout (4 consecutive steps with
+        # at least one entire sector at zero health). Only fires after step 6 to
+        # avoid false termination during the initial transient.
         sector_summary = self._compute_sector_summary()
         if any(v == 0.0 for v in sector_summary.values()):
             self._zero_sector_streak += 1
@@ -1791,21 +1809,26 @@ class CascadeEnvironment(Environment):
         if self._step >= 6 and self._zero_sector_streak >= 4:
             return True
 
-        # Condition 3: early success
+        # Condition 3: early success — only allowed in the final 10% of the
+        # episode so the UI always shows close to max_steps steps.
+        # Previously this was 60% which caused OSM / task_hard episodes to
+        # terminate at step ~19 instead of 30.
         all_op = all(ns.is_operational for ns in self._node_states.values())
         weather_clear = self._weather_forecast == "clear"
         last_stress_step = max(self._stress_schedule.keys()) if self._stress_schedule else 0
         all_events_fired = self._step > last_stress_step
         no_pending = len(self._pending_recoveries) == 0
 
-        # BUG 6 FIX: Require minimum steps so the episode runs long enough
-        # for the agent to actually encounter stress events and learn from them.
-        # min_steps = max(last_stress_step + 2, max_steps // 3)
+        # Require 90% of max_steps AND all stress events to have fired.
         # Examples:
-        #   task_easy  (max=10, last_stress=2):  min_steps = max(4, 3)  = 4
-        #   task_medium(max=20, last_stress=12): min_steps = max(14, 6) = 14
-        #   task_hard  (max=30, last_stress=15): min_steps = max(17, 10)= 17
-        min_steps_for_early_exit = max(last_stress_step + 3, int(math.ceil(self._max_steps * 0.6)))
+        #   task_easy  (max=10):  min_steps = max(4,  9)  = 9
+        #   task_medium(max=20):  min_steps = max(14, 18) = 18
+        #   task_hard  (max=30):  min_steps = max(17, 27) = 27
+        #   task_osm_* (max=30):  min_steps = max(25, 27) = 27
+        min_steps_for_early_exit = max(
+            last_stress_step + 3,
+            int(math.ceil(self._max_steps * 0.9)),
+        )
 
         if (
             self._step >= min_steps_for_early_exit

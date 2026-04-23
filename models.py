@@ -7,6 +7,26 @@ from pydantic import BaseModel, ConfigDict, field_validator
 from openenv.core.env_server.types import Action, Observation, State
 
 
+ALLOWED_ACTION_TYPES: tuple[str, ...] = (
+    "harden",
+    "shed_load",
+    "coordinate",
+    "recover",
+    "isolate",
+    "wait",
+    "reroute",
+    "prioritize",
+    "deploy_repair_crew",
+    "emergency_shutdown",
+    "cross_sector_bridge",
+    "patch_scada",
+    "redistribute_load",
+    "request_mutual_aid",
+    "controlled_cascade",
+    "multi_sector_lockdown",
+)
+
+
 class NodeStatus(BaseModel):
     node_id: str
     sector: str  # one of: power, water, hospital, telecom
@@ -149,12 +169,7 @@ class CascadeAction(Action):
     @field_validator("action_type")
     @classmethod
     def validate_action_type(cls, v: str) -> str:
-        allowed = {
-            "harden", "shed_load", "coordinate", "recover", "isolate", "wait",
-            "reroute", "prioritize", "deploy_repair_crew", "emergency_shutdown",
-            "cross_sector_bridge", "patch_scada", "redistribute_load",
-            "request_mutual_aid", "controlled_cascade", "multi_sector_lockdown",
-        }
+        allowed = set(ALLOWED_ACTION_TYPES)
         if v not in allowed:
             raise ValueError(
                 f"action_type must be one of {allowed}, got {v!r}"

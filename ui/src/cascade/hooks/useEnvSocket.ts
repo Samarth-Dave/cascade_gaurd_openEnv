@@ -3,6 +3,13 @@ import type { CGObservation } from '../data/types';
 import { ENV_BASE, ENV_WS } from '../config/env';
 import { normalizeObservation } from '../lib/liveObservation';
 
+const SOCKET_DEBUG = import.meta.env.DEV;
+
+const socketLog = (...args: unknown[]) => {
+  if (!SOCKET_DEBUG) return;
+  console.debug('[useEnvSocket]', ...args);
+};
+
 export type ConnState = 'connecting' | 'live' | 'sim' | 'error';
 
 export interface UseEnvSocket {
@@ -72,6 +79,7 @@ export function useEnvSocket(
   errorRef.current = onError;
 
   const emitError = useCallback((message: string) => {
+    socketLog('error', message);
     setLastError(message);
     errorRef.current?.(message);
   }, []);
@@ -91,6 +99,7 @@ export function useEnvSocket(
 
   const open = useCallback((task: string) => {
     if (wsConnectingRef.current) return;
+    taskRef.current = task;
     cleanup();
     wsConnectingRef.current = true;
     setState('connecting');
@@ -130,6 +139,7 @@ export function useEnvSocket(
       settled = true;
       wsConnectingRef.current = false;
       setState('live');
+      socketLog('connected', { ws: ENV_WS, task });
       try {
         ws.send(JSON.stringify({ type: 'reset', data: { task_id: task } }));
       } catch (error) {
@@ -137,11 +147,20 @@ export function useEnvSocket(
       }
     };
 
-    ws.onmessage = (event) => {
+    ws.onmessage = async (event) => {
       if (wsRef.current !== ws) return;
+
+      const raw =
+        typeof event.data === 'string'
+          ? event.data
+          : event.data instanceof Blob
+            ? await event.data.text()
+            : String(event.data);
+      socketLog('raw message', raw.slice(0, 900));
+
       let msg: unknown;
       try {
-        msg = JSON.parse(event.data);
+        msg = JSON.parse(raw);
       } catch {
         emitError('WS parse error');
         return;
@@ -154,6 +173,14 @@ export function useEnvSocket(
 
       const obs = toObservation(msg);
       if (!obs) return;
+      socketLog('observation', {
+        step: obs.step,
+        max_steps: obs.max_steps,
+        nodes: obs.nodes.length,
+        nodes_with_coords: obs.nodes.filter((node) => Number.isFinite(node.lat) && Number.isFinite(node.lon)).length,
+        active_failures: obs.active_failures.length,
+        reward: obs.reward,
+      });
       setLastObs(obs);
       obsRef.current?.(obs);
     };
@@ -204,6 +231,7 @@ export function useEnvSocket(
     }
     try {
       ws.send(JSON.stringify({ type: 'step', data: { action_type, target_node_id, parameters } }));
+      socketLog('sent action', { action_type, target_node_id, parameters });
     } catch (error) {
       emitError(`Action send failed: ${String(error)}`);
     }
@@ -217,6 +245,7 @@ export function useEnvSocket(
     }
     try {
       ws.send(JSON.stringify({ type: 'reset', data: { task_id: taskRef.current } }));
+      socketLog('sent reset', { task_id: taskRef.current });
     } catch (error) {
       emitError(`Reset send failed: ${String(error)}`);
     }
