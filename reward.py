@@ -175,25 +175,24 @@ def grpo_verifier(
     has_cot   = "<think>" in completion and "</think>" in completion
     cot_bonus = 0.03 if has_cot else 0.0
 
-    # ── 5. Base env-state reward (same for all completions in a group) ────────
-    node_states = obs.get("node_states", {})
-    centrality  = {
-        nid: d.get("centrality", 0.0)
-        for nid, d in node_states.items()
-        if isinstance(d, dict)
-    }
+    # ── 5. Base env-state reward (directionally aligned with env terms) ────────
+    sector_health = obs.get("sector_health", {}) or {}
+    if isinstance(sector_health, dict) and sector_health:
+        avg_sector = sum(float(v) for v in sector_health.values()) / max(len(sector_health), 1)
+    else:
+        avg_sector = 0.5
 
-    base = compute_reward(
-        sector_health    = obs.get("sector_health", {}),
-        cascade_depth    = obs.get("cascade_depth", 0),
-        budget_remaining = obs.get("budget", init_budget),
-        init_budget      = init_budget,
-        node_states      = node_states,
-        centrality       = centrality,
-        action_quality   = validity_score,   # injected per-completion score
-    )
+    cascade_depth = int(obs.get("cascade_depth", 0) or 0)
+    cascade_score = 1.0 - min(1.0, cascade_depth / 5.0)
 
-    return round(max(-1.0, min(1.0, base + cot_bonus)), 4)
+    budget = float(obs.get("budget_remaining", obs.get("budget", init_budget)) or init_budget)
+    budget_score = budget / max(float(init_budget), 1.0)
+
+    base_state = 0.40 * avg_sector + 0.35 * cascade_score + 0.25 * budget_score
+    base_state = base_state * 2.0 - 1.0  # map [0, 1] -> [-1, 1]
+
+    final = base_state + validity_score + cot_bonus
+    return round(max(-1.0, min(1.0, final)), 4)
 
 
 def parse_action_from_completion(text: str) -> Dict:

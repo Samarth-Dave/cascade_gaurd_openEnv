@@ -71,6 +71,10 @@ ENV PATH="/app/.venv/bin:$PATH"
 # Set PYTHONPATH so imports work correctly
 ENV PYTHONPATH="/app/env:$PYTHONPATH"
 
+# Smoke-test: catch import errors at build time
+RUN python -c "from cascade_guard.client import CascadeGuardEnv; print('OK client')" && \
+    python -c "from cascade_guard.server.cascade_environment import CascadeEnvironment; print('OK server')"
+
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1

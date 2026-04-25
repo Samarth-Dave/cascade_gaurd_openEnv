@@ -67,19 +67,21 @@ TASK_CONFIGS: Dict[str, dict] = {
             {"node_id": "POWER_TRANS_2", "sector": "power", "is_critical": False, "lat": 19.180, "lon": 72.960, "service_radius_km": 30.0},
             {"node_id": "POWER_DIST_1",  "sector": "power", "is_critical": False, "lat": 19.090, "lon": 72.860, "service_radius_km": 20.0},
             {"node_id": "POWER_DIST_2",  "sector": "power", "is_critical": False, "lat": 19.150, "lon": 72.900, "service_radius_km": 20.0},
+            {"node_id": "HOSP_1",        "sector": "hospital", "is_critical": True, "lat": 19.0012, "lon": 72.8402, "service_radius_km": 8.0},
         ],
         "edges": [
             {"source_id": "POWER_GEN_1",   "target_id": "POWER_TRANS_1"},
             {"source_id": "POWER_GEN_1",   "target_id": "POWER_TRANS_2"},
             {"source_id": "POWER_TRANS_1", "target_id": "POWER_DIST_1"},
             {"source_id": "POWER_TRANS_2", "target_id": "POWER_DIST_2"},
+            {"source_id": "POWER_DIST_1",  "target_id": "HOSP_1"},
         ],
         "stress_schedule": {
             2: {"type": "equipment_fault", "target": "POWER_DIST_1", "effect": -0.75},
         },
         "delayed_sectors": [],
         "partial_obs_nodes": [],
-        "description": "Single-sector power grid fault. Equipment fault hits POWER_DIST_1 at step 2.",
+        "description": "Power grid with one critical hospital dependency. Equipment fault hits POWER_DIST_1 at step 2.",
     },
 
     "task_medium": {

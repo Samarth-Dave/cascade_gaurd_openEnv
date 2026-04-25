@@ -15,9 +15,9 @@ from functools import lru_cache
 from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
-from client import CascadeGuardEnv
-from models import CascadeAction
-from tasks import TASK_CONFIGS, TASK_SEED_SPLITS
+from .client import CascadeGuardEnv
+from .models import CascadeAction
+from .tasks import TASK_CONFIGS, TASK_SEED_SPLITS
 
 # Local planner disabled to avoid local/server behavior drift during evaluation.
 LocalCascadeEnvironment = None
@@ -59,10 +59,9 @@ TASK_CONFIGS_BUDGET: Dict[str, float] = {
     "task_surge_demand": 9.0,
 }
 
-# Token budget: output only needs ~60 tokens for the JSON action.
-# Keeping max_tokens LOW is critical - Groq limits total context (input+output).
+# Token budget: allow brief reasoning plus the final action JSON.
 TEMPERATURE: float = 0.0
-MAX_TOKENS: int = 60   # action JSON ~ 50-60 chars / ~15 tokens; 80 is ample
+MAX_TOKENS: int = 300
 EVAL_MODE: str = os.environ.get("EVAL_MODE", "baseline")  # baseline | multiseed
 EVAL_SPLIT: str = os.environ.get("EVAL_SPLIT", "holdout")
 SCORE_EPS: float = 0.01  # Strict epsilon: score range is [0.01, 0.99]
@@ -71,8 +70,8 @@ BASELINE_RESULTS_PATH: str = os.environ.get("BASELINE_RESULTS_PATH", "baseline_r
 # System prompt - ultra-compact to save context tokens
 SYSTEM_PROMPT = (
     "You are an infrastructure resilience agent. "
-    "Output ONLY a single JSON line - no markdown, no explanation.\n"
-    'Format: {"action_type": "harden|shed_load|coordinate|recover|wait", '
+    "First reason briefly inside <think>...</think>, then output ONLY one JSON object.\n"
+    'Format: <think>brief reasoning</think>{"action_type": "harden|shed_load|coordinate|recover|wait", '
     '"target_node_id": "NODE_ID or null"}\n'
     "Rules (in order of priority): "
     "1) NEVER shed_load on hospital-sector or critical nodes. "
@@ -1278,6 +1277,13 @@ async def _get_action(
                     raw = raw[4:]
                 raw = raw.strip()
             _debug(f"[DIAG] LLM raw: {raw!r}")
+            if "</think>" in raw:
+                raw = raw.split("</think>", 1)[1].strip()
+            if not raw.startswith("{"):
+                start = raw.find("{")
+                end = raw.rfind("}")
+                if start != -1 and end != -1 and end > start:
+                    raw = raw[start : end + 1]
             parsed = json.loads(raw)
 
             chosen = {

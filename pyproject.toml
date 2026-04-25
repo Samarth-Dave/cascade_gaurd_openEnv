@@ -23,12 +23,24 @@ dependencies = [
     "pydantic>=2.0",
     "fastapi>=0.104.0",
     "uvicorn>=0.24.0",
+    # LLM inference (used by inference.py)
+    "openai>=1.0.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0.0",
     "pytest-cov>=4.0.0",
+]
+training = [
+    "torch>=2.0.0",
+    "trl>=0.24.0",
+    "peft>=0.14.0",
+    "transformers>=4.40.0",
+    "datasets>=4.2.0",
+    "accelerate>=1.0.0",
+    "pandas>=2.0.0",
+    "matplotlib>=3.7.0",
 ]
 
 [project.scripts]
@@ -38,5 +50,5 @@ server = "cascade_guard.server.app:main"
 
 [tool.setuptools]
 include-package-data = true
-packages = ["cascade_guard", "cascade_guard.server"]
-package-dir = { "cascade_guard" = ".", "cascade_guard.server" = "server" }
+packages = ["cascade_guard", "cascade_guard.server", "cascade_guard.training"]
+package-dir = { "cascade_guard" = ".", "cascade_guard.server" = "server", "cascade_guard.training" = "training" }

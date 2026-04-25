@@ -38,7 +38,7 @@ except ImportError:
     _OPENENV_AVAILABLE = False
     EnvClient = object  # type: ignore[assignment,misc]
 
-from models import CascadeAction, CascadeObservation
+from .models import CascadeAction, CascadeObservation
 
 
 class CascadeEnvClient(EnvClient if _OPENENV_AVAILABLE else object):  # type: ignore[misc]

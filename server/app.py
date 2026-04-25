@@ -114,7 +114,7 @@ async def get_tasks():
     Returns all registered task IDs with their descriptions and metadata.
     Includes dynamically loaded OSM city tasks.
     """
-    from tasks import TASK_CONFIGS
+    from cascade_guard.tasks import TASK_CONFIGS
     return {
         tid: {
             "description": cfg.get("description", ""),

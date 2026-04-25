@@ -21,6 +21,10 @@ COPY . .
 
 RUN pip install --no-cache-dir -e .
 
+# Smoke-test: catch import errors at build time, not at runtime
+RUN python -c "from cascade_guard.client import CascadeGuardEnv; print('OK cascade_guard.client')"
+RUN python -c "from cascade_guard.server.cascade_environment import CascadeEnvironment; print('OK cascade_guard.server')"
+
 COPY --from=ui-builder /app/ui/dist /app/ui/dist
 
 EXPOSE 8000

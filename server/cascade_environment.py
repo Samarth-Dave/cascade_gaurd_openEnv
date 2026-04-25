@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Set
 
 from openenv.core.env_server import Environment
 
-from models import (
+from ..models import (
     CascadeAction,
     CascadeObservation,
     CascadeState,
@@ -17,10 +17,10 @@ from models import (
     NodeStatus,
     ObservationDiagnostics,
 )
-from tasks import TASK_CONFIGS, materialize_task_config, resolve_seed
-from server.graders import grade
+from ..tasks import TASK_CONFIGS, materialize_task_config, resolve_seed
+from .graders import grade
 try:
-    from geo_utils import (
+    from ..geo_utils import (
         compute_coverage_matrix,
         compute_cascade_mitigation,
         compute_obs_confidence,
@@ -1409,6 +1409,7 @@ class CascadeEnvironment(Environment):
     def _build_observation(self) -> CascadeObservation:
         # Get telecom operational status for observation confidence computation
         telecom_operational = []
+        has_telecom_sector = any(ns.sector == "telecom" for ns in self._node_states.values())
         if GEO_AVAILABLE and self._node_coords:
             for nid, ns in self._node_states.items():
                 if ns.sector == "telecom" and ns.is_operational and nid in self._node_coords:
@@ -1437,7 +1438,7 @@ class CascadeEnvironment(Environment):
 
             # v2: observation confidence based on telecom coverage
             obs_confidence = 1.0
-            if GEO_AVAILABLE and self._node_coords and nid in self._node_coords:
+            if GEO_AVAILABLE and self._node_coords and nid in self._node_coords and has_telecom_sector:
                 n_lat, n_lon, _ = self._node_coords[nid]
                 obs_confidence = compute_obs_confidence(nid, telecom_operational, n_lat, n_lon)
                 # Low confidence = add slight noise (keeps expected value correct, adds variance)
@@ -1709,7 +1710,7 @@ class CascadeEnvironment(Environment):
         if recovery_correct_order:
             r += 0.10
             # Additional bonus for recovering critical-path nodes
-            if recovery_correct_order:
+            if any(self._node_states.get(nid) and self._node_states[nid].is_critical for nid in completed_recoveries):
                 r += 0.05  # small boost so recovery is clearly better than wait
 
         if dependency_recovery_score > 0.0:

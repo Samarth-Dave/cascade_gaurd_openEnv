@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import dataclasses
 from typing import Optional
 
 from openenv.core.env_client import EnvClient, StepResult
 
-from models import CascadeAction, CascadeObservation, CascadeState
+from .models import CascadeAction, CascadeObservation, CascadeState
 
 
 class CascadeGuardEnv(EnvClient):
@@ -36,15 +37,26 @@ class CascadeGuardEnv(EnvClient):
     #  ADD THIS
     def _parse_result(self, data: dict) -> StepResult:
         observation = CascadeObservation(**data["observation"])
+        raw_reward = data.get("reward")
         return StepResult(
             observation=observation,
-            reward=data.get("reward", 0.0),
-            done=data.get("done", False)
+            reward=float(raw_reward) if raw_reward is not None else 0.0,
+            done=bool(data.get("done", False))
         )
 
     #  ADD THIS
     def _parse_state(self, data: dict):
-        return CascadeState(**data)
+        if dataclasses.is_dataclass(CascadeState):
+            valid_fields = {f.name for f in dataclasses.fields(CascadeState)}
+        elif hasattr(CascadeState, "model_fields"):
+            # Pydantic v2
+            valid_fields = set(CascadeState.model_fields.keys())
+        else:
+            # Pydantic v1 fallback
+            valid_fields = set(getattr(CascadeState, "__fields__", {}).keys())
+
+        filtered = {k: v for k, v in data.items() if k in valid_fields}
+        return CascadeState(**filtered)
 
     #  ADD THIS
     def _step_payload(self, action: CascadeAction):

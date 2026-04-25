@@ -22,7 +22,7 @@ import re
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from models import CascadeAction, CascadeObservation
+    from ..models import CascadeAction, CascadeObservation
 
 
 ADVANCED_ACTION_TYPES = (
