@@ -1491,6 +1491,7 @@ def make_grpo_reward_fn(CascadeEnvironment, CascadeAction, parse_action_from_res
         nonlocal reward_call_count
         reward_call_count += 1
         rewards: List[float] = []
+        action_log: List[str] = []
         n = len(completions)
         task_ids = _ensure_list(task_id, n, "task_easy")
         seeds = _ensure_list(seed, n, 42)
@@ -1535,6 +1536,7 @@ def make_grpo_reward_fn(CascadeEnvironment, CascadeAction, parse_action_from_res
             )
 
             agent_action = parse_action_from_response(text, agent_obs)
+            action_log.append(f"{agent_action.action_type}({agent_action.target_node_id})")
             agent_legal = agent_env.get_legal_actions() if hasattr(agent_env, "get_legal_actions") else []
             teacher_legal = teacher_env.get_legal_actions() if hasattr(teacher_env, "get_legal_actions") else []
             teacher_action = _select_teacher_action(
@@ -1666,27 +1668,35 @@ def make_grpo_reward_fn(CascadeEnvironment, CascadeAction, parse_action_from_res
 
             rewards.append(float(max(-4.0, min(4.0, reward))))
 
+        # ── Diversity diagnostic ──────────────────────────────────────
+        # Log action diversity and reward variance so we can detect
+        # diversity collapse (all completions → same action → 0 advantage).
         if reward_stats_every > 0 and rewards and (reward_call_count % reward_stats_every == 0):
-            pre_mu = statistics.mean(rewards)
-            pre_sd = statistics.pstdev(rewards) if len(rewards) > 1 else 0.0
+            raw_mu = statistics.mean(rewards)
+            raw_sd = statistics.pstdev(rewards) if len(rewards) > 1 else 0.0
+            unique_actions = len(set(action_log)) if action_log else 0
             log.info(
-                "Reward stats (pre-normalize): call=%d n=%d mean=%.4f std=%.4f min=%.4f max=%.4f",
+                "GRPO reward  call=%d  n=%d  mean=%.4f  std=%.4f  min=%.4f  max=%.4f  "
+                "unique_actions=%d/%d  actions=%s",
                 reward_call_count,
                 len(rewards),
-                pre_mu,
-                pre_sd,
-                min(rewards),
-                max(rewards),
+                raw_mu, raw_sd, min(rewards), max(rewards),
+                unique_actions, len(rewards),
+                action_log[:8],
             )
+            if raw_sd < 1e-4:
+                log.warning(
+                    "  ⚠ Near-zero reward std (%.6f) — all completions likely "
+                    "produced the same action. Increase temperature or "
+                    "num_generations.",
+                    raw_sd,
+                )
 
-        # ── Group-normalise (GRPO baseline subtraction) ───────────────
-        if len(rewards) >= 2:
-            mu = statistics.mean(rewards)
-            sd = statistics.pstdev(rewards)
-            if sd > 1e-6:
-                rewards = [(r - mu) / max(sd, 0.05) for r in rewards]
-            else:
-                rewards = [r - mu for r in rewards]
+        # NOTE: Do NOT group-normalize here. TRL's GRPOTrainer already
+        # computes per-group advantages = (reward - group_mean) / group_std.
+        # Normalizing before returning makes TRL see mean≈0 rewards at every
+        # step (masking real signal) and collapses near-zero-variance groups
+        # to exactly 0.
 
         return rewards
 
