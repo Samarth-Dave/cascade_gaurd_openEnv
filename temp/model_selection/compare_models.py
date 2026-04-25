@@ -226,15 +226,19 @@ def _load_model(model_id: str, hf_token: Optional[str]):
 
 def _generate(model, tok, system_prompt: str, user_prompt: str,
               max_new_tokens: int) -> Tuple[str, int, float]:
-    """Returns (decoded_text, n_new_tokens, seconds)."""
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user",   "content": user_prompt},
     ]
     try:
-        ids = tok.apply_chat_template(
+        encoded = tok.apply_chat_template(
             messages, return_tensors="pt", add_generation_prompt=True
-        ).to(model.device)
+        )
+        # Newer transformers returns BatchEncoding, older returns raw Tensor
+        if isinstance(encoded, torch.Tensor):
+            ids = encoded.to(model.device)
+        else:
+            ids = encoded["input_ids"].to(model.device)
     except Exception:
         text = system_prompt + "\n" + user_prompt + "\n"
         ids = tok(text, return_tensors="pt").input_ids.to(model.device)
@@ -246,7 +250,7 @@ def _generate(model, tok, system_prompt: str, user_prompt: str,
         out = model.generate(
             ids,
             max_new_tokens=max_new_tokens,
-            do_sample=False,                # greedy → reproducible cost measurement
+            do_sample=False,
             pad_token_id=tok.pad_token_id,
             eos_token_id=tok.eos_token_id,
         )
