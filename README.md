@@ -1,12 +1,11 @@
 ---
-title: CascadeGuard Environment
+title: CascadeGuard
 emoji: "⚡"
-colorFrom: blue
-colorTo: green
+colorFrom: red
+colorTo: blue
 sdk: docker
 pinned: false
-app_port: 8000
-base_path: /web
+app_port: 7860
 tags:
   - openenv
   - reinforcement-learning

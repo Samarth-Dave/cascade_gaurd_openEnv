@@ -13,13 +13,29 @@ import type {
 } from "@/types";
 
 const trim = (value: string | undefined) => (value ?? "").trim().replace(/\/+$/, "");
+
+// API_BASE_URL = "" in production (single HF Space) -> fetch uses relative URLs
+// like "/api/health", which resolve to the same origin that served the UI.
+// In local dev set VITE_API_URL=http://localhost:7860 to point at the backend.
+const API_BASE_URL = trim(import.meta.env.VITE_API_URL);
+
+// WS_BASE_URL: explicit override > derive from API base > derive from current origin.
+function deriveWsBase(): string {
+  const explicit = trim(import.meta.env.VITE_WS_URL);
+  if (explicit) return explicit;
+  if (API_BASE_URL) return API_BASE_URL.replace(/^http/i, "ws");
+  if (typeof window !== "undefined" && window.location) {
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return `${protocol}//${window.location.host}`;
+  }
+  return "";
+}
+const WS_BASE_URL = deriveWsBase();
+
 const pathForApi = (path: string) =>
   API_BASE_URL.endsWith("/api") && path.startsWith("/api/")
     ? path.slice(4)
     : path;
-
-const API_BASE_URL = trim(import.meta.env.VITE_API_URL);
-const WS_BASE_URL = trim(import.meta.env.VITE_WS_URL) || API_BASE_URL.replace(/^http/i, "ws");
 
 type RequestInitWithJson = RequestInit & {
   json?: unknown;

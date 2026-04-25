@@ -1,5 +1,6 @@
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useMemo,
@@ -19,6 +20,7 @@ import type {
   WsEvent,
 } from "@/types";
 import { useEpisodeStream } from "@/hooks/useEpisodeStream";
+import type { EpisodeStreamStepPayload } from "@/hooks/useEpisodeStream";
 import type { LogLine } from "@/components/cascade/TerminalLog";
 
 interface CascadeContextValue {
@@ -60,24 +62,65 @@ export function CascadeProvider({ children }: { children: ReactNode }) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const stream = useEpisodeStream(sessionId, state?.done ?? false);
+  const applyEpisodeState = useCallback((nextState: EpisodeState) => {
+    setState(nextState);
+    setCurrentNodes(nextState.nodes);
+    setCurrentEdges(nextState.edges);
+  }, []);
+
+  const applyStepResult = useCallback((result: StepResult): EpisodeState => {
+    // Always rebuild state from result.new_state and merge in the canonical
+    // node/edge arrays the backend returned at the top level. This guarantees
+    // currentNodes/currentEdges, episode_score, step, cascade_depth,
+    // sector_health and budget all advance after every step.
+    const nextState: EpisodeState = {
+      ...result.new_state,
+      done: result.done === true,
+      nodes: result.nodes && result.nodes.length > 0 ? result.nodes : result.new_state.nodes,
+      edges: result.edges && result.edges.length > 0 ? result.edges : result.new_state.edges,
+    };
+    setState(nextState);
+    setCurrentNodes(nextState.nodes);
+    setCurrentEdges(nextState.edges);
+    return nextState;
+  }, []);
+
+  const onStepResult = useCallback(
+    (payload: EpisodeStreamStepPayload) => {
+      if (payload.result?.new_state) {
+        const nextState = applyStepResult(payload.result);
+        const enrichedResult: StepResult = {
+          ...payload.result,
+          new_state: nextState,
+          nodes: nextState.nodes,
+          edges: nextState.edges,
+          done: nextState.done,
+        };
+        setLastStepResult(enrichedResult);
+        setAgentThinking(payload.result.agent_thinking ?? "");
+        setAgentAction(payload.result.agent_action ?? null);
+        if (payload.result.done === true) {
+          setAutoRun(false);
+          void queryClient.invalidateQueries({ queryKey: ["episode-history"] });
+        }
+        return;
+      }
+
+      if (payload.state) {
+        applyEpisodeState({
+          ...payload.state,
+          done: payload.state.done === true,
+        });
+      }
+    },
+    [applyEpisodeState, applyStepResult, queryClient],
+  );
+
+  const stream = useEpisodeStream(sessionId, state?.done ?? false, onStepResult);
 
   useEffect(() => {
     if (!stream.lastEvent) return;
     appendLog(stream.lastEvent.level, stream.lastEvent.message, stream.lastEvent.timestamp);
-    if (stream.lastEvent.type === "step_result") {
-      const payload = stream.lastEvent.payload as { result?: StepResult; state?: EpisodeState };
-      if (payload.result?.new_state) {
-        const nextState = hydrateStepState(payload.result);
-        setState(nextState);
-        setCurrentNodes(nextState.nodes);
-        setCurrentEdges(nextState.edges);
-      } else if (payload.state) {
-        setState(payload.state);
-        setCurrentNodes(payload.state.nodes);
-        setCurrentEdges(payload.state.edges);
-      }
-    }
   }, [stream.lastEvent]);
 
   useEffect(() => {
@@ -112,11 +155,16 @@ export function CascadeProvider({ children }: { children: ReactNode }) {
     setAutoRun(false);
     try {
       const response: EpisodeResetResponse = await apiClient.resetEpisode(task, seed);
+      const nextState: EpisodeState = {
+        ...response.state,
+        // resetEpisode always begins a fresh, not-done run.
+        done: false,
+        nodes: response.nodes.length > 0 ? response.nodes : response.state.nodes,
+        edges: response.edges.length > 0 ? response.edges : response.state.edges,
+      };
       setConfig({ task, seed });
       setSessionId(response.session_id);
-      setState(response.state);
-      setCurrentNodes(response.nodes.length > 0 ? response.nodes : response.state.nodes);
-      setCurrentEdges(response.edges.length > 0 ? response.edges : response.state.edges);
+      applyEpisodeState(nextState);
       setLastStepResult(null);
       setAgentThinking("");
       setAgentAction(null);
@@ -135,7 +183,8 @@ export function CascadeProvider({ children }: { children: ReactNode }) {
     setError(null);
     try {
       const result = await apiClient.stepEpisode(sessionId, action, target);
-      handleStepResult(result, `Manual action ${action}${target ? ` -> ${target}` : ""}`, action, target);
+      const nextState = applyStepResult(result);
+      handleStepResult(result, `Manual action ${action}${target ? ` -> ${target}` : ""}`, action, target, nextState);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Action failed.");
     } finally {
@@ -149,7 +198,14 @@ export function CascadeProvider({ children }: { children: ReactNode }) {
     setError(null);
     try {
       const result = await apiClient.agentStep(sessionId);
-      handleStepResult(result, "Agent step executed.", result.agent_action?.action ?? null, result.agent_action?.target ?? null);
+      const nextState = applyStepResult(result);
+      handleStepResult(
+        result,
+        "Agent step executed.",
+        result.agent_action?.action ?? null,
+        result.agent_action?.target ?? null,
+        nextState,
+      );
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Agent step failed.");
       setAutoRun(false);
@@ -163,25 +219,23 @@ export function CascadeProvider({ children }: { children: ReactNode }) {
     message: string,
     actionLabel: string | null,
     actionTarget: string | null,
+    nextState: EpisodeState,
   ) {
-    const nextState = hydrateStepState(result);
-    const enrichedResult = {
+    const enrichedResult: StepResult = {
       ...result,
       new_state: nextState,
       nodes: nextState.nodes,
       edges: nextState.edges,
+      done: nextState.done,
     };
     const previousState = state;
     setLastStepResult(enrichedResult);
-    setState(nextState);
-    setCurrentNodes(nextState.nodes);
-    setCurrentEdges(nextState.edges);
     setAgentThinking(result.agent_thinking ?? "");
     setAgentAction(result.agent_action ?? null);
-    appendLog(result.done ? "OK" : "INFO", message);
+    appendLog(nextState.done ? "OK" : "INFO", message);
     const feedback = buildActionFeedbackEntry(previousState, enrichedResult, actionLabel, actionTarget);
     appendLog(feedback.level, feedback.message);
-    if (result.done) {
+    if (nextState.done) {
       setAutoRun(false);
       void queryClient.invalidateQueries({ queryKey: ["episode-history"] });
     }
@@ -213,15 +267,6 @@ export function CascadeProvider({ children }: { children: ReactNode }) {
   );
 
   return <CascadeContext.Provider value={value}>{children}</CascadeContext.Provider>;
-}
-
-function hydrateStepState(result: StepResult): EpisodeState {
-  return {
-    ...result.new_state,
-    done: result.done || result.new_state.done,
-    nodes: result.nodes.length > 0 ? result.nodes : result.new_state.nodes,
-    edges: result.edges.length > 0 ? result.edges : result.new_state.edges,
-  };
 }
 
 function findNode(nodes: InfraNode[], nodeId: string | null): InfraNode | null {

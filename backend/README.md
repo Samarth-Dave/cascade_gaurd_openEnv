@@ -1,5 +1,5 @@
 ---
-title: CascadeGuard Backend
+title: CascadeGuard
 emoji: ⚡
 colorFrom: red
 colorTo: blue
@@ -7,9 +7,11 @@ sdk: docker
 pinned: false
 ---
 
-# CascadeGuard Backend
+# CascadeGuard
 
-Session-aware FastAPI orchestration layer for the judge-facing demo.
+Single-Space deployment: FastAPI on port 7860 serves both the `/api/*` routes
+AND the built React UI as static files. Browser, UI, and API all share the
+same origin in production, so CORS does not apply there.
 
 ## What it does
 

@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 from env_client import EnvClient
 from llm_client import LlmClient
@@ -79,9 +80,40 @@ SECTOR_KEYS = ("power", "water", "hospital", "telecom")
 BASELINE_PATH = ROOT_DIR / "baseline_results.json"
 REAL_NODES_PATH = ROOT_DIR / "data" / "real_nodes.json"
 DATASET_PATH = ROOT_DIR / "data" / "cascadeguard_sft_dataset.csv"
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 logger = logging.getLogger("cascadeguard.backend")
 MUMBAI_NODE_LOOKUP_BY_ID: Dict[str, Dict[str, Any]] = {}
+MUMBAI_NODE_LOOKUP_LOWER: Dict[str, Dict[str, Any]] = {}
 MISSING_GEO_NODE_IDS: set[str] = set()
+
+# Spread points across Mumbai used as a fallback when a node_id from the
+# environment server (e.g. POWER_GEN_1, HOSP_1) is not present in real_nodes.json.
+MUMBAI_FALLBACKS: Tuple[Tuple[float, float], ...] = (
+    (19.076, 72.877),
+    (19.050, 72.821),
+    (19.120, 72.900),
+    (18.960, 72.820),
+    (19.033, 72.862),
+    (19.089, 72.863),
+    (18.998, 72.836),
+    (19.145, 72.870),
+    (19.065, 72.835),
+    (18.975, 72.855),
+    (19.110, 72.885),
+    (19.022, 72.848),
+    (19.055, 72.910),
+    (19.080, 72.840),
+    (19.038, 72.875),
+)
+DEFAULT_RADIUS_BY_SECTOR = {
+    "power": 35.0,
+    "water": 20.0,
+    "hospital": 8.0,
+    "telecom": 100.0,
+    "ai": 5.0,
+}
+_FALLBACK_GEO_INDEX: Dict[str, int] = {}
+
 
 def _load_mumbai_real_node_lookup() -> Dict[str, Dict[str, Any]]:
     if not REAL_NODES_PATH.exists():
@@ -102,13 +134,11 @@ def _load_mumbai_real_node_lookup() -> Dict[str, Dict[str, Any]]:
         }
     return by_id
 
-ui_space_url = os.getenv("UI_SPACE_URL", "").strip()
-allowed_origins = ["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:8080"]
-if ui_space_url:
-    allowed_origins.append(ui_space_url)
-allowed_origins.append("*")
 
 app = FastAPI(title="CascadeGuard Backend", version="1.0.0")
+# allow_credentials=True with allow_origins=["*"] is invalid (browsers reject it)
+# and silently breaks CORS. In single-Space production the UI is same-origin so
+# CORS is not used; we keep permissive CORS for local dev only.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -124,8 +154,9 @@ session_manager = SessionManager()
 
 @app.on_event("startup")
 async def on_startup() -> None:
-    global MUMBAI_NODE_LOOKUP_BY_ID
+    global MUMBAI_NODE_LOOKUP_BY_ID, MUMBAI_NODE_LOOKUP_LOWER
     MUMBAI_NODE_LOOKUP_BY_ID = _load_mumbai_real_node_lookup()
+    MUMBAI_NODE_LOOKUP_LOWER = {key.lower(): value for key, value in MUMBAI_NODE_LOOKUP_BY_ID.items()}
     logger.info("Loaded %s Mumbai geo nodes from %s", len(MUMBAI_NODE_LOOKUP_BY_ID), REAL_NODES_PATH)
     try:
         loaded_source = await asyncio.to_thread(llm_client.load_model)
@@ -555,21 +586,58 @@ def _sector_health(raw_observation: Dict[str, Any], raw_state: Dict[str, Any]) -
 
 
 def _resolve_node_geo(node: Dict[str, Any]) -> Dict[str, float]:
-    node_id = str(node.get("node_id", ""))
-    direct = MUMBAI_NODE_LOOKUP_BY_ID.get(node_id)
+    """Resolve geo for an env-server node.
+
+    Lookup order:
+      1. Exact match against real_nodes.json mumbai entries.
+      2. Lowercase match (env IDs vary in case).
+      3. The env payload itself (if it carries lat/lng).
+      4. Stable spread across Mumbai using MUMBAI_FALLBACKS.
+    """
+    node_id = str(node.get("node_id", "")).strip()
+
+    direct = MUMBAI_NODE_LOOKUP_BY_ID.get(node_id) or MUMBAI_NODE_LOOKUP_LOWER.get(node_id.lower())
     if direct is not None:
         return {
             "lat": float(direct["lat"]),
             "lng": float(direct["lng"]),
             "service_radius_km": float(direct["service_radius_km"]),
         }
+
+    payload_lat = node.get("lat")
+    payload_lng = node.get("lng", node.get("lon"))
+    if (
+        payload_lat is not None
+        and payload_lng is not None
+        and (float(payload_lat) != 0.0 or float(payload_lng) != 0.0)
+    ):
+        return {
+            "lat": float(payload_lat),
+            "lng": float(payload_lng),
+            "service_radius_km": float(
+                node.get("service_radius_km")
+                or DEFAULT_RADIUS_BY_SECTOR.get(str(node.get("sector", "")).lower(), 10.0)
+            ),
+        }
+
     if node_id and node_id not in MISSING_GEO_NODE_IDS:
         MISSING_GEO_NODE_IDS.add(node_id)
-        logger.warning("No Mumbai geo coordinates found in real_nodes.json for node_id=%s", node_id)
+        logger.info(
+            "No Mumbai geo coordinates for node_id=%s — assigning fallback Mumbai coordinate.",
+            node_id,
+        )
+
+    if node_id not in _FALLBACK_GEO_INDEX:
+        _FALLBACK_GEO_INDEX[node_id] = len(_FALLBACK_GEO_INDEX) % len(MUMBAI_FALLBACKS)
+    lat, lng = MUMBAI_FALLBACKS[_FALLBACK_GEO_INDEX[node_id]]
+    sector = str(node.get("sector", "")).lower()
     return {
-        "lat": float(node.get("lat", 0.0)),
-        "lng": float(node.get("lon", 0.0)),
-        "service_radius_km": float(node.get("service_radius_km", 0.0)),
+        "lat": float(lat),
+        "lng": float(lng),
+        "service_radius_km": float(
+            node.get("service_radius_km")
+            or DEFAULT_RADIUS_BY_SECTOR.get(sector, 10.0)
+        ),
     }
 
 
@@ -669,6 +737,33 @@ def _timestamp() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-@app.get("/")
-async def root() -> JSONResponse:
-    return JSONResponse({"status": "ok", "message": "CascadeGuard backend is running."})
+# ---------------------------------------------------------------------------
+# Static UI (single-Space deployment)
+# ---------------------------------------------------------------------------
+# In production the Docker build copies the built React app into ./static.
+# FastAPI serves /assets/* and falls back to index.html for client-side routes.
+# ---------------------------------------------------------------------------
+if STATIC_DIR.exists():
+    assets_dir = STATIC_DIR / "assets"
+    if assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
+
+    index_file = STATIC_DIR / "index.html"
+
+    @app.get("/", include_in_schema=False)
+    async def serve_index() -> FileResponse:
+        return FileResponse(str(index_file))
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_ui(full_path: str) -> FileResponse:
+        if full_path.startswith(("api/", "ws/")):
+            raise HTTPException(status_code=404, detail="Not found.")
+        candidate = STATIC_DIR / full_path
+        if candidate.is_file():
+            return FileResponse(str(candidate))
+        return FileResponse(str(index_file))
+else:
+
+    @app.get("/", include_in_schema=False)
+    async def root() -> JSONResponse:
+        return JSONResponse({"status": "ok", "message": "CascadeGuard backend is running."})

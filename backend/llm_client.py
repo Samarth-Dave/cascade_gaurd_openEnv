@@ -4,6 +4,7 @@ import asyncio
 import os
 import re
 import sys
+import types
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, Optional
@@ -16,6 +17,9 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.append(str(ROOT_DIR))
 
 from training.cot_prompt import build_system_prompt, build_user_prompt  # noqa: E402
+
+# Fields that build_user_prompt iterates over with .items() — must stay dicts.
+_DICT_FIELDS_OBS = {"sector_summary"}
 
 
 class LlmClient:
@@ -68,7 +72,7 @@ class LlmClient:
         if not self.is_loaded():
             raise RuntimeError("Model is not loaded.")
 
-        obs = _to_namespace(raw_observation)
+        obs = _build_observation(raw_observation)
         messages = [
             {"role": "system", "content": build_system_prompt()},
             {"role": "user", "content": build_user_prompt(obs)},
@@ -118,6 +122,38 @@ def _to_namespace(value: Any) -> Any:
     if isinstance(value, list):
         return [_to_namespace(item) for item in value]
     return value
+
+
+def _to_dict(obj: Any) -> Any:
+    """Recursively convert SimpleNamespace -> plain dict.
+
+    Useful when build_user_prompt expects an object with .items() (e.g.
+    sector_summary), which SimpleNamespace does not provide.
+    """
+    if isinstance(obj, types.SimpleNamespace):
+        return {key: _to_dict(value) for key, value in vars(obj).items()}
+    if isinstance(obj, list):
+        return [_to_dict(item) for item in obj]
+    if isinstance(obj, dict):
+        return {key: _to_dict(value) for key, value in obj.items()}
+    return obj
+
+
+def _build_observation(raw_observation: Dict[str, Any]) -> SimpleNamespace:
+    """Convert raw observation to a namespace shaped for build_user_prompt.
+
+    build_user_prompt expects:
+      - top-level + nested fields via attribute access (obs.step, n.health, d.critical_failures)
+      - obs.sector_summary as a plain dict (so .items() works)
+    """
+    obs = _to_namespace(raw_observation)
+    for field in _DICT_FIELDS_OBS:
+        value = getattr(obs, field, None)
+        if isinstance(value, SimpleNamespace):
+            setattr(obs, field, _to_dict(value))
+        elif value is None:
+            setattr(obs, field, {})
+    return obs
 
 
 def _extract_tag(content: str, tag: str) -> str:
