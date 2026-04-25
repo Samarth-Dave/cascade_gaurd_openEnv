@@ -680,13 +680,27 @@ def grade(task_id: str, uncapped: bool = False, **kwargs) -> float:
     # entirely. Now both signals move in the same direction.
     #
     # If explicit_cf was passed, use it. Otherwise derive from failure_history.
+    #
+    # IMPORTANT: failure_history is a per-step SNAPSHOT of currently-failed
+    # nodes, so summing len() across steps double-counts persistent failures
+    # (a node down for 10 steps → counted 10× instead of 1×). The penalty
+    # constant (0.04/CF) was sized for DISTINCT critical-node failures
+    # (~5–15 per episode), so summing snapshots floored every grader at 0.01
+    # and silently destroyed the GRPO score-delta training signal. We now:
+    #   1. Count UNIQUE node IDs that ever failed (correct semantic).
+    #   2. Cap the total deduction at 0.50 to preserve learning signal even
+    #      in worst-case episodes.
     if explicit_cf is None:
         fh = kwargs.get("failure_history", [])
-        # Count total critical-node failures across the episode
-        # (approximate: we count each step a node was failed, summed)
-        explicit_cf = sum(len(s) for s in fh) if fh else 0
+        if fh:
+            unique_failed: Set[str] = set()
+            for s in fh:
+                unique_failed.update(s)
+            explicit_cf = len(unique_failed)
+        else:
+            explicit_cf = 0
     if explicit_cf > 0:
-        cf_deduction = _critical_failure_penalty(explicit_cf)
+        cf_deduction = min(0.50, _critical_failure_penalty(explicit_cf))
         raw = max(SCORE_EPS, raw - cf_deduction)
 
     if uncapped:

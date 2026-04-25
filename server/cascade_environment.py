@@ -937,6 +937,22 @@ class CascadeEnvironment(Environment):
 
         # Compute episode score using the grader, including centrality-aware bonus
         failure_history_sets = [set(s) for s in self._failure_history]
+
+        # Count DISTINCT critical-node failures across the episode. We pass
+        # this explicitly so grade() doesn't have to derive it from
+        # failure_history (which is a per-step snapshot — naive summation
+        # would over-count persistent failures by ~10–30× and floor every
+        # grade at 0.01, collapsing the GRPO score-delta signal).
+        unique_failed_nodes: Set[str] = set()
+        for s in failure_history_sets:
+            unique_failed_nodes.update(s)
+        total_critical_failures = sum(
+            1
+            for nid in unique_failed_nodes
+            if (self._node_states.get(nid) is not None
+                and self._node_states[nid].is_critical)
+        )
+
         episode_score = grade(
             task_id=self._task_id,
             failure_history=failure_history_sets,
@@ -949,6 +965,7 @@ class CascadeEnvironment(Environment):
             dependency_order_log=self._dependency_order_log,
             action_history=self._action_history,
             high_centrality_nodes=self._compute_high_centrality_nodes(),   # P2
+            total_critical_failures=total_critical_failures,                # exact CF count
         )
 
         # Keep score strictly in the evaluator-accepted open interval.
