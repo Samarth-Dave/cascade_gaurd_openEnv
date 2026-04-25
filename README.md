@@ -1,12 +1,11 @@
 ---
-title: CascadeGuard Environment
+title: CascadeGuard
 emoji: "⚡"
-colorFrom: blue
-colorTo: green
+colorFrom: red
+colorTo: blue
 sdk: docker
 pinned: false
-app_port: 8000
-base_path: /web
+app_port: 7860
 tags:
   - openenv
   - reinforcement-learning
@@ -15,298 +14,195 @@ tags:
 
 # CascadeGuard
 
-CascadeGuard is a cascading-failure resilience system built around two pieces:
+CascadeGuard is a cascading-failure resilience system for critical infrastructure.
+It combines:
 
-- an OpenEnv backend that simulates cross-sector infrastructure crises
-- a Vite + React frontend that visualizes live episodes and sends operator actions
+- an OpenEnv environment server (simulation engine)
+- a FastAPI orchestration backend (sessions, API, websocket stream, LLM policy calls)
+- a React dashboard (live episode controls, graph, analytics, dataset browser)
 
-The backend models failures across power, water, hospital, and telecom systems. The frontend connects to the backend over WebSocket, renders the live graph and sector health, and lets the user step the environment or dispatch actions.
+The system models failures across power, water, hospital, and telecom sectors and lets a user or agent execute containment actions step-by-step.
 
-## Repository Layout
-
-This git repository contains the environment and server:
+## What Is In This Repository
 
 ```text
 cascade_gaurd_openEnv/
-  server/
-    app.py                    FastAPI/OpenEnv server entrypoint
-    cascade_environment.py    environment dynamics and reward logic
-  models.py                   Pydantic action, observation, and state models
-  tasks.py                    task registry and scenario definitions
-  data/                       real-world node and edge data
-  inference.py                baseline inference runner
-  test_ws.py                  websocket protocol smoke test
-  ui/
-    README.md                 repo-side frontend documentation
+├── server/                 OpenEnv environment server (port 8000)
+├── backend/                FastAPI orchestrator + static UI serving (port 7860)
+├── ui/                     React/Vite dashboard source
+├── training/               GRPO training scripts and notebook
+├── data/                   real_nodes.json and SFT dataset CSV
+├── tasks.py                scenario definitions + OSM task registration
+├── inference.py            baseline/multiseed evaluator runner
+└── scripts/                utility and verification scripts
 ```
 
-The frontend source now lives inside this repository under:
+## Architecture
 
-```text
-ui/
-```
- 
-It is the active UI that replaced the old standalone HTML prototype.
+Data flow during normal use:
 
-## System Overview
+1. UI calls backend REST endpoints under /api/* and subscribes to /ws/episode/{session_id}
+2. Backend creates per-session environment clients and forwards actions to environment server /reset, /step, /state
+3. Backend enriches state, computes grader breakdown, and streams events
+4. UI renders graph, sector health, score, logs, history, and analytics
 
-### Backend
+Production behavior:
 
-The backend exposes an OpenEnv-compatible environment with:
+- backend/main.py serves both API and built UI static files from one container on port 7860
+- in this mode, browser/API are same-origin
 
-- typed actions via `CascadeAction`
-- typed observations via `CascadeObservation`
-- typed state via `CascadeState`
-- reset and step semantics over WebSocket
-- supporting REST endpoints for health, graph, city, task, and node metadata
+## Quick Start (Local)
 
-### Frontend
+Prerequisites:
 
-The frontend is a React app that:
-
-- connects to `ws://localhost:8000/ws`
-- sends `reset` and `step` payloads
-- renders the city map, nodes, edges, logs, and reward curve
-- uses live OpenEnv data when available
-- falls back to a scripted simulation if the backend is unreachable
-
-## Backend Contract
-
-### WebSocket Endpoint
-
-The frontend connects to:
-
-```text
-ws://localhost:8000/ws
-```
-
-### Reset Message
-
-```json
-{
-  "type": "reset",
-  "data": {
-    "task_id": "task_hard"
-  }
-}
-```
-
-### Step Message
-
-```json
-{
-  "type": "step",
-  "data": {
-    "action_type": "recover",
-    "target_node_id": "POWER_GEN_1",
-    "parameters": {}
-  }
-}
-```
-
-### Observation Shape
-
-The server returns observations containing:
-
-- `step`
-- `max_steps`
-- `budget_remaining`
-- `weather_forecast`
-- `nodes`
-- `edges`
-- `active_failures`
-- `pending_recoveries`
-- `sector_summary`
-- `diagnostics`
-- `task_id`
-- `info`
-- `reward`
-- `done`
-
-Key node fields include:
-
-- `node_id`
-- `sector`
-- `health`
-- `load`
-- `is_operational`
-- `is_hardened`
-- `observation_delayed`
-- `is_critical`
-- `real_name`
-- `lat`
-- `lon`
-- `service_radius_km`
-
-### Supported Core Actions
-
-Common actions used by the UI:
-
-- `recover`
-- `harden`
-- `shed_load`
-- `coordinate`
-- `wait`
-
-The model layer also supports advanced actions such as:
-
-- `isolate`
-- `reroute`
-- `prioritize`
-- `deploy_repair_crew`
-- `emergency_shutdown`
-- `cross_sector_bridge`
-- `patch_scada`
-- `redistribute_load`
-- `request_mutual_aid`
-- `controlled_cascade`
-- `multi_sector_lockdown`
-
-## REST Endpoints
-
-The FastAPI server also exposes:
-
-- `GET /health`
-- `GET /graph?city=london`
-- `GET /cities`
-- `GET /tasks`
-- `GET /node_data?city=london&node_id=...`
-
-## Prerequisites
-
-### Backend
-
-- Python 3.10+
-- `fastapi`
-- `uvicorn`
-- `openenv-core`
-- other Python dependencies from `pyproject.toml`
-
-### Frontend
-
-- Node.js 18+ recommended
+- Python 3.11+
+- Node.js 20+ (or 18+)
 - npm
 
-## Backend Setup
+### 1. Install Python Dependencies
 
-From the repo root:
+From repo root:
 
 ```powershell
+python -m venv .venv
+.venv\Scripts\activate
 pip install -e .
+pip install -r backend/requirements.txt
 ```
 
-If you already have the Python dependencies installed, you can go straight to running the server.
-
-## Frontend Setup
-
-From the repo root:
+### 2. Install UI Dependencies
 
 ```powershell
 cd ui
-npm.cmd install
+npm install
+cd ..
 ```
 
-If PowerShell blocks `npm.ps1`, keep using `npm.cmd`.
+### 3. Run Services
 
-## How To Run Everything Locally
+Use three terminals.
 
-Open two terminals.
-
-### Terminal 1 - backend
-
-From the repository root:
+Terminal A (environment server, port 8000):
 
 ```powershell
-python -m uvicorn cascade_guard.server.app:app --host 0.0.0.0 --port 8000
+uvicorn cascade_guard.server.app:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-The backend starts on:
+Terminal B (backend orchestrator, port 7860):
 
-```text
-http://localhost:8000
+```powershell
+cd backend
+$env:OPENENV_SERVER_URL="http://localhost:8000"
+uvicorn main:app --host 0.0.0.0 --port 7860 --reload
 ```
 
-### Terminal 2 - frontend
-
-From `ui`:
+Terminal C (UI dev server, port 5173):
 
 ```powershell
 cd ui
-npm.cmd run dev
+$env:VITE_API_URL="http://localhost:7860"
+$env:VITE_WS_URL="ws://localhost:7860"
+npm run dev
 ```
 
-The frontend starts on:
+Open http://localhost:5173.
 
-```text
-http://localhost:8080
+Notes:
+
+- If OPENENV_SERVER_URL is not set, backend defaults to https://samarthdave0305-cascade-failure-env.hf.space
+- ui/.env in this repo already points to backend port 7860 for local dev
+
+## Main Backend API (backend/main.py)
+
+REST endpoints:
+
+- GET /api/health
+- POST /api/episode/reset
+- POST /api/episode/step
+- POST /api/episode/agent-step
+- GET /api/episode/state/{session_id}
+- GET /api/episodes/history
+- GET /api/training/reward-curve
+- GET /api/training/baseline-comparison
+- GET /api/environment/graph
+- GET /api/dataset/sft?format=csv
+- GET /api/dataset/sft/stats
+
+WebSocket:
+
+- WS /ws/episode/{session_id}
+
+Manual step contract:
+
+```json
+POST /api/episode/step
+{
+  "session_id": "...",
+  "action": "REPAIR|ISOLATE|REROUTE|MONITOR|...",
+  "target": "NODE_ID or null"
+}
 ```
 
-## Local Test Flow
+## Environment Server API (server/app.py)
 
-1. Start the backend.
-2. Start the frontend.
-3. Open `http://localhost:8080`.
-4. Launch a city from the modal.
-5. Confirm the UI banner shows a live OpenEnv connection.
-6. Use `Step`, `Reset`, or the action buttons to interact with the environment.
+- GET /health
+- GET /graph?city=...
+- GET /cities
+- GET /tasks
+- GET /actions
+- GET /node_data?city=...&node_id=...
 
-If the backend is not reachable, the UI automatically switches to the scripted simulation fallback.
+## Tasks and Scenarios
 
-## Frontend Environment Variables
+UI selectable tasks (current backend Task type):
 
-The frontend defaults to local URLs, so no env file is required for local development.
+- task_easy
+- task_medium
+- task_hard
+- task_blackout (mapped to task_gen_blackout internally)
+- task_cyberattack
 
-Optional overrides:
+Environment task templates in tasks.py additionally include:
 
-- `VITE_ENV_BASE`
-- `VITE_ENV_WS`
+- task_gen_blackout
+- task_surge_demand
+- task_real_city
+- task_osm_london
+- task_osm_mumbai
+- task_osm_bangalore
+- task_osm_delhi
+- task_osm_nyc
+- task_osm_tokyo
 
-Example:
+OSM tasks are loaded dynamically from data/real_nodes.json at import time.
 
-```powershell
-$env:VITE_ENV_BASE="http://localhost:8000"
-$env:VITE_ENV_WS="ws://localhost:8000/ws"
-npm.cmd run dev
-```
+## UI Pages
 
-## Verification Commands
+- /simulate: live episode controls, graph, manual actions, terminal log
+- /analytics: reward curve and baseline comparison cards
+- /history: completed episode summaries and trajectories
+- /dataset: filterable SFT browser + CSV download
+- /about: architecture summary and links
 
-### Backend health
+## Training, Evaluation, and Data
 
-```powershell
-curl http://localhost:8000/health
-```
+Artifacts:
 
-### WebSocket smoke test
+- data/cascadeguard_sft_dataset.csv
+- data/real_nodes.json
+- baseline_results.json
 
-From the repo root:
+Training and evaluation entrypoints:
 
-```powershell
-python test_ws.py
-```
+- training/train_grpo.py
+- training/CascadeGuard_GRPO_Colab.ipynb
+- inference.py
 
-This validates that the server accepts a `reset` and a `step` call on the WebSocket protocol.
-
-### Frontend production build
-
-From the frontend folder:
-
-```powershell
-cd ui
-npm.cmd run build
-```
-
-## Inference and Training
-
-### Baseline inference
-
-From the repo root:
+Common examples:
 
 ```powershell
 python inference.py
 ```
-
-### Multi-seed evaluation
 
 ```powershell
 $env:EVAL_MODE="multiseed"
@@ -314,64 +210,34 @@ $env:EVAL_SPLIT="holdout"
 python inference.py
 ```
 
-Switch `EVAL_SPLIT` as needed for your scenario split.
+## Deployment Notes
 
-### GRPO training
+- backend/Dockerfile builds UI in a Node stage, copies dist into backend/static, and serves everything from FastAPI on port 7860
+- root Dockerfile builds the OpenEnv environment server image for port 8000
 
-The training code lives under `training/`. Use the notebook and training scripts there for GRPO experiments.
+## Verification and Troubleshooting
 
-## Frontend Scripts
-
-From `ui/`:
-
-- `npm.cmd run dev`
-- `npm.cmd run build`
-- `npm.cmd run build:dev`
-- `npm.cmd run lint`
-- `npm.cmd run test`
-- `npm.cmd run test:watch`
-
-## Troubleshooting
-
-### PowerShell blocks npm
-
-Use:
+Health checks:
 
 ```powershell
-npm.cmd install
-npm.cmd run dev
+curl http://localhost:7860/api/health
+curl http://localhost:8000/health
 ```
 
-### Frontend falls back to simulation
-
-Check:
-
-- backend is running on port `8000`
-- frontend is pointing to `ws://localhost:8000/ws`
-- no stale custom `VITE_ENV_BASE` or `VITE_ENV_WS` values are set
-
-### WebSocket connection refused
-
-Start the backend first, wait until it is listening on port `8000`, then refresh the frontend.
-
-### Vite build fails because dependencies are missing
-
-Run:
+Useful checks:
 
 ```powershell
-cd ..\cascade-guard-core-main
-npm.cmd install
+python scripts/verify_training_pipeline.py
+python scripts/verify_upgrade.py
 ```
 
-### Python server import errors
+If npm scripts are blocked in PowerShell, use npm.cmd instead of npm.
 
-Reinstall the backend in editable mode:
-
-```powershell
-pip install -e .
-```
+If UI requests fail, confirm VITE_API_URL and VITE_WS_URL point to backend (7860), not environment server (8000).
 
 ## Additional Docs
 
-- UI-specific docs: [ui/README.md](ui/README.md)
-- Run notes: [HOW_TO_RUN.md](HOW_TO_RUN.md)
+- backend/README.md
+- ui/README.md
+- HOW_TO_RUN.md
+- CASCADEGUARD_MASTER_README.md

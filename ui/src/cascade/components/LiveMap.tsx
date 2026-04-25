@@ -28,7 +28,9 @@ interface Props {
   onStep: () => void;
   onReset: () => void;
   onSpeed: (s: 0.5|1|2|4) => void;
-  onDispatch: (action: string, target: string | null) => void;
+  onDispatch: (action: string, target: string | null, parameters?: Record<string, unknown>) => void;
+  availableActionTypes: string[];
+  actionSamples: Record<string, { action_type: string; target_node_id: string | null; parameters: Record<string, unknown> }>;
   busy: boolean;
   whatsHappening: string;
   episodeId: string;
@@ -39,18 +41,44 @@ const STATUS_CLASS: Record<string,string> = {
   repair:'cg-mk-repair', isolated:'cg-mk-isolated', operational:'cg-mk-operational',
 };
 type ActionDef = { key: string; label: string; cost: number; hover: string; path: string };
-const ACTIONS: ActionDef[] = [
-  { key:'recover',    label:'Recover Node',   cost:1200, hover:'hover:bg-[hsl(var(--purple))]/10 hover:text-[hsl(var(--purple))]',
-    path:'<path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/>' },
-  { key:'harden',     label:'Harden Node',    cost:600,  hover:'hover:bg-[hsl(var(--accent))]/10 hover:text-[hsl(var(--accent))]',
-    path:'<path d="M12 2 4 5v6c0 5 3.5 9 8 11 4.5-2 8-6 8-11V5z"/>' },
-  { key:'shed_load',  label:'Shed Load',      cost:300,  hover:'hover:bg-[hsl(var(--amber))]/10 hover:text-[hsl(var(--amber))]',
-    path:'<path d="M13 2 4 14h7l-1 8 9-12h-7z"/>' },
-  { key:'coordinate', label:'Coordinate',     cost:400,  hover:'hover:bg-[hsl(var(--green))]/10 hover:text-[hsl(var(--green))]',
-    path:'<path d="M5 12a7 7 0 0 1 14 0"/><path d="M8 12a4 4 0 0 1 8 0"/><circle cx="12" cy="12" r="1.5"/><path d="M12 14v6"/>' },
-  { key:'wait',       label:'Wait / Monitor', cost:0,    hover:'hover:bg-foreground/5',
-    path:'<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>' },
+const FALLBACK_ACTION_TYPES = [
+  'recover', 'harden', 'shed_load', 'coordinate', 'wait',
+  'isolate', 'reroute', 'prioritize', 'deploy_repair_crew',
+  'emergency_shutdown', 'cross_sector_bridge', 'patch_scada',
+  'redistribute_load', 'request_mutual_aid', 'controlled_cascade', 'multi_sector_lockdown',
 ];
+const TARGET_OPTIONAL_ACTIONS = new Set(['wait', 'multi_sector_lockdown']);
+const NODE_TARGET_ACTIONS = new Set([
+  'recover',
+  'harden',
+  'shed_load',
+  'coordinate',
+  'isolate',
+  'prioritize',
+  'deploy_repair_crew',
+  'emergency_shutdown',
+  'patch_scada',
+  'controlled_cascade',
+]);
+
+const ACTION_UI: Record<string, Omit<ActionDef, 'key'>> = {
+  recover: { label: 'Recover Node', cost: 1200, hover: 'hover:bg-[hsl(var(--purple))]/10 hover:text-[hsl(var(--purple))]', path: '<path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/>' },
+  harden: { label: 'Harden Node', cost: 600, hover: 'hover:bg-[hsl(var(--accent))]/10 hover:text-[hsl(var(--accent))]', path: '<path d="M12 2 4 5v6c0 5 3.5 9 8 11 4.5-2 8-6 8-11V5z"/>' },
+  shed_load: { label: 'Shed Load', cost: 300, hover: 'hover:bg-[hsl(var(--amber))]/10 hover:text-[hsl(var(--amber))]', path: '<path d="M13 2 4 14h7l-1 8 9-12h-7z"/>' },
+  coordinate: { label: 'Coordinate', cost: 400, hover: 'hover:bg-[hsl(var(--green))]/10 hover:text-[hsl(var(--green))]', path: '<path d="M5 12a7 7 0 0 1 14 0"/><path d="M8 12a4 4 0 0 1 8 0"/><circle cx="12" cy="12" r="1.5"/><path d="M12 14v6"/>' },
+  wait: { label: 'Wait / Monitor', cost: 0, hover: 'hover:bg-foreground/5', path: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>' },
+  isolate: { label: 'Isolate Node', cost: 250, hover: 'hover:bg-[hsl(var(--red))]/10 hover:text-[hsl(var(--red))]', path: '<path d="M4 7h16"/><path d="M4 17h16"/><path d="M8 7v10"/><path d="M16 7v10"/>' },
+  reroute: { label: 'Reroute Supply', cost: 600, hover: 'hover:bg-[hsl(var(--accent-2))]/10 hover:text-[hsl(var(--accent-2))]', path: '<path d="M4 7h8"/><path d="M10 3l4 4-4 4"/><path d="M20 17h-8"/><path d="M14 13l-4 4 4 4"/>' },
+  prioritize: { label: 'Prioritize Node', cost: 350, hover: 'hover:bg-[hsl(var(--purple))]/10 hover:text-[hsl(var(--purple))]', path: '<path d="M12 3v18"/><path d="M5 12h14"/>' },
+  deploy_repair_crew: { label: 'Deploy Repair Crew', cost: 900, hover: 'hover:bg-[hsl(var(--green))]/10 hover:text-[hsl(var(--green))]', path: '<path d="M3 21h18"/><path d="M7 21v-6h10v6"/><path d="M8 7h8l2 8H6z"/>' },
+  emergency_shutdown: { label: 'Emergency Shutdown', cost: 200, hover: 'hover:bg-[hsl(var(--red))]/10 hover:text-[hsl(var(--red))]', path: '<path d="M12 2v10"/><circle cx="12" cy="15" r="7"/>' },
+  cross_sector_bridge: { label: 'Cross-Sector Bridge', cost: 1500, hover: 'hover:bg-[hsl(var(--accent))]/10 hover:text-[hsl(var(--accent))]', path: '<path d="M4 12h6"/><path d="M14 12h6"/><path d="M10 8l4 4-4 4"/>' },
+  patch_scada: { label: 'Patch SCADA', cost: 800, hover: 'hover:bg-[hsl(var(--accent-2))]/10 hover:text-[hsl(var(--accent-2))]', path: '<rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 20h8"/><path d="M10 8h4"/><path d="M10 12h4"/>' },
+  redistribute_load: { label: 'Redistribute Load', cost: 500, hover: 'hover:bg-[hsl(var(--amber))]/10 hover:text-[hsl(var(--amber))]', path: '<path d="M3 12h18"/><path d="M8 7l-5 5 5 5"/><path d="M16 7l5 5-5 5"/>' },
+  request_mutual_aid: { label: 'Request Mutual Aid', cost: 2500, hover: 'hover:bg-[hsl(var(--green))]/10 hover:text-[hsl(var(--green))]', path: '<path d="M7 12h10"/><path d="M12 7v10"/><circle cx="12" cy="12" r="9"/>' },
+  controlled_cascade: { label: 'Controlled Cascade', cost: 1800, hover: 'hover:bg-[hsl(var(--red))]/10 hover:text-[hsl(var(--red))]', path: '<path d="M4 4l16 16"/><path d="M20 4 4 20"/>' },
+  multi_sector_lockdown: { label: 'Multi-Sector Lockdown', cost: 2000, hover: 'hover:bg-[hsl(var(--purple))]/10 hover:text-[hsl(var(--purple))]', path: '<rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 1 1 8 0v3"/>' },
+};
 
 const ActionIcon = ({ path, className = 'h-3.5 w-3.5' }: { path: string; className?: string }) => (
   <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round" dangerouslySetInnerHTML={{ __html: path }} />
@@ -61,8 +89,29 @@ export function LiveMap(p: Props) {
   const mapObj = useRef<L.Map | null>(null);
   const layerNodes = useRef<L.LayerGroup | null>(null);
   const layerEdges = useRef<L.LayerGroup | null>(null);
+  // Tracks which city was last used for auto-fit so city changes always re-center correctly
+  const lastFitCityRef = useRef<string>(p.city.key);
 
   const [target, setTarget] = useState<string | null>(null);
+
+  const actionDefs = useMemo<ActionDef[]>(() => {
+    const incoming = p.availableActionTypes.length > 0 ? p.availableActionTypes : FALLBACK_ACTION_TYPES;
+    const deduped = Array.from(new Set(incoming));
+    return deduped.map((key) => {
+      const ui = ACTION_UI[key] ?? {
+        label: key.replaceAll('_', ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
+        cost: 0,
+        hover: 'hover:bg-foreground/5',
+        path: '<circle cx="12" cy="12" r="8"/><path d="M12 8v8"/><path d="M8 12h8"/>',
+      };
+      return { key, ...ui };
+    });
+  }, [p.availableActionTypes]);
+
+  const mapLog = (...args: unknown[]) => {
+    if (!import.meta.env.DEV) return;
+    console.debug('[LiveMap]', ...args);
+  };
 
   // Init Leaflet
   useEffect(() => {
@@ -76,13 +125,10 @@ export function LiveMap(p: Props) {
     layerNodes.current = L.layerGroup().addTo(m);
     layerEdges.current = L.layerGroup().addTo(m);
     mapObj.current = m;
+    lastFitCityRef.current = p.city.key;
     return () => { m.remove(); mapObj.current = null; };
   }, []);
-
-  // Re-center on city change
-  useEffect(() => {
-    mapObj.current?.setView(p.city.center, p.city.zoom, { animate: true });
-  }, [p.city.key, p.city.center, p.city.zoom]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps — intentional one-time init
 
   // Compute coordinates with fallback
   const placedNodes = useMemo(() => {
@@ -97,6 +143,44 @@ export function LiveMap(p: Props) {
       return { ...n, lat, lon };
     });
   }, [p.nodes, p.city.center]);
+
+  // Re-center on city change OR auto-fit to backend node coords on new episode start.
+  // Priority: if city changed → always snap to city center (fixes Bug 1 where London
+  // scripted nodes were overriding Tokyo/NYC/etc. after city switch).
+  useEffect(() => {
+    const map = mapObj.current;
+    if (!map) return;
+
+    // ── City changed: snap to the new city center immediately ──────────────
+    if (lastFitCityRef.current !== p.city.key) {
+      lastFitCityRef.current = p.city.key;
+      map.setView(p.city.center, p.city.zoom, { animate: true });
+      mapLog('re-centered map on city change', { city: p.city.key, center: p.city.center });
+      return;
+    }
+
+    // ── Same city, step 0: auto-fit to live backend node coordinates ────────
+    if (p.step !== 0) return;
+
+    const coords = placedNodes
+      .filter((n) => Number.isFinite(n.lat) && Number.isFinite(n.lon))
+      .map((n) => [n.lat as number, n.lon as number] as [number, number]);
+
+    if (coords.length === 0) return;
+
+    if (coords.length === 1) {
+      map.setView(coords[0], Math.max(map.getZoom(), 12), { animate: true });
+    } else {
+      map.fitBounds(L.latLngBounds(coords).pad(0.22), { animate: true });
+    }
+
+    mapLog('auto-fit map to observation coordinates', {
+      step: p.step,
+      node_count: placedNodes.length,
+      coord_count: coords.length,
+      sample: coords[0],
+    });
+  }, [placedNodes, p.step, p.city.key, p.city.center, p.city.zoom]);
 
   // Render nodes
   useEffect(() => {
@@ -116,6 +200,15 @@ export function LiveMap(p: Props) {
       const mk = L.marker([n.lat!, n.lon!], { icon });
       mk.on('click', () => setTarget(n.node_id));
       mk.addTo(layerNodes.current!);
+    });
+
+    const nodesWithCoords = placedNodes.filter((n) => Number.isFinite(n.lat) && Number.isFinite(n.lon)).length;
+    mapLog('render markers', {
+      step: p.step,
+      rendered_markers: placedNodes.length,
+      nodes_with_coords: nodesWithCoords,
+      map_center: mapObj.current?.getCenter(),
+      map_zoom: mapObj.current?.getZoom(),
     });
   }, [placedNodes, p.pendingRecoveries]);
 
@@ -148,7 +241,7 @@ export function LiveMap(p: Props) {
   const speeds: (0.5|1|2|4)[] = [0.5,1,2,4];
 
   return (
-    <section id="map" className="relative px-5 py-16">
+    <section id="map" className="relative scroll-mt-[72px] px-5 py-16">
       <div className="max-w-[1400px] mx-auto cg-reveal">
         <div className="flex items-end justify-between mb-5 flex-wrap gap-3">
           <div>
@@ -222,7 +315,7 @@ export function LiveMap(p: Props) {
           <div className="relative">
             <div ref={mapRef} className="w-full" style={{ height: 540 }} />
             {/* Action Dispatch */}
-            <div className="hidden md:block absolute top-3 left-3 z-[400] w-[224px] rounded-xl bg-card border border-foreground/15 cg-shadow-card p-3">
+            <div className="hidden md:block absolute top-3 left-3 z-30 w-[224px] rounded-xl bg-card border border-foreground/15 cg-shadow-card p-3" style={{ maxHeight: '480px', display: 'flex', flexDirection: 'column', gap: 0 }}>
               <div className="flex items-center gap-2 mb-2">
                 <span className="relative inline-flex h-2 w-2 rounded-full bg-[hsl(var(--green))] cg-live-pulse" />
                 <span className="text-xs font-bold">Dispatch Action</span>
@@ -233,21 +326,40 @@ export function LiveMap(p: Props) {
                 <option value="">— click a node or pick —</option>
                 {p.nodes.map(n => <option key={n.node_id} value={n.node_id}>{n.node_id} · {n.sector}</option>)}
               </select>
-              <div className="mt-2 space-y-1">
-                {ACTIONS.map(a => (
+              <div
+                className="mt-2 space-y-1"
+                style={{ flex: '1 1 0', minHeight: 0, overflowY: 'auto', maxHeight: '360px' }}
+              >
+                {actionDefs.map((a) => {
+                  const sample = p.actionSamples[a.key];
+                  const hasSampleTarget = typeof sample?.target_node_id === 'string' && sample.target_node_id.length > 0;
+                  const requiresTarget = !TARGET_OPTIONAL_ACTIONS.has(a.key);
+                  const missingTarget = requiresTarget && !target && !hasSampleTarget;
+
+                  return (
                   <button key={a.key}
-                    disabled={p.busy}
-                    onClick={() => p.onDispatch(a.key, a.key==='wait' ? null : target)}
+                    disabled={p.busy || missingTarget}
+                    onClick={() => {
+                      const sampleTarget = hasSampleTarget ? sample.target_node_id : null;
+                      let dispatchTarget = TARGET_OPTIONAL_ACTIONS.has(a.key) ? null : (sampleTarget ?? target);
+
+                      if (NODE_TARGET_ACTIONS.has(a.key) && target) {
+                        dispatchTarget = target;
+                      }
+
+                      p.onDispatch(a.key, dispatchTarget, sample?.parameters ?? {});
+                    }}
                     className={`w-full flex items-center justify-between gap-2 h-8 px-2 rounded-md text-[12px] font-medium transition-colors disabled:opacity-50 ${a.hover}`}>
                     <span className="inline-flex items-center gap-1.5"><ActionIcon path={a.path} /><span>{a.label}</span></span>
                     <span className="font-mono text-[10px] text-foreground/50">${a.cost}</span>
                   </button>
-                ))}
+                  );
+                })}
               </div>
             </div>
 
             {/* Sector Health Sidebar */}
-            <div className="hidden md:block absolute top-3 right-3 z-[400] w-[220px] rounded-xl bg-card border border-foreground/15 cg-shadow-card p-3">
+            <div className="hidden md:block absolute top-3 right-3 z-30 w-[220px] rounded-xl bg-card border border-foreground/15 cg-shadow-card p-3">
               <div className="text-xs font-bold mb-2">Sector Health</div>
               <div className="space-y-2">
                 {([
@@ -265,7 +377,7 @@ export function LiveMap(p: Props) {
             </div>
 
             {/* Event Feed */}
-            <div className="hidden md:block absolute bottom-3 left-3 z-[400] w-[290px] rounded-xl border border-white/10 cg-shadow-card overflow-hidden" style={{ background:'rgba(13,13,13,0.92)' }}>
+            <div className="hidden md:block absolute bottom-3 left-3 z-30 w-[290px] rounded-xl border border-white/10 cg-shadow-card overflow-hidden" style={{ background:'rgba(13,13,13,0.92)' }}>
               <div className="flex items-center gap-2 px-3 py-2 border-b border-white/5">
                 <span className="relative inline-flex h-2 w-2 rounded-full bg-[hsl(var(--green))] cg-live-pulse" />
                 <span className="text-[11px] font-bold text-white">Live Event Feed</span>

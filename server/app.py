@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from openenv.core.env_server import create_app
 
 from cascade_guard.server.cascade_environment import CascadeEnvironment
-from cascade_guard.models import CascadeAction, CascadeObservation
+from cascade_guard.models import ALLOWED_ACTION_TYPES, CascadeAction, CascadeObservation
 
 app = create_app(CascadeEnvironment, CascadeAction, CascadeObservation)
 
@@ -124,6 +124,17 @@ async def get_tasks():
             "city":        cfg.get("city", "mumbai"),
         }
         for tid, cfg in TASK_CONFIGS.items()
+    }
+
+
+@app.get("/actions")
+async def get_actions():
+    """
+    Returns backend-supported action types for dynamic UI action menus.
+    """
+    return {
+        "actions": list(ALLOWED_ACTION_TYPES),
+        "count": len(ALLOWED_ACTION_TYPES),
     }
 
 
