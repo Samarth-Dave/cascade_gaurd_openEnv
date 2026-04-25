@@ -15,12 +15,25 @@ from typing import Dict, List, Optional
 # ---------------------------------------------------------------------------
 # Weights (must match CascadeEnvironment._compute_reward)
 # ---------------------------------------------------------------------------
-W_HOSPITAL   = 0.35
-W_CASCADE    = 0.25
-W_BUDGET     = 0.20
-W_CENTRALITY = 0.20
+W_HOSPITAL      = 0.30   # was 0.35 — still highest priority
+W_CASCADE       = 0.20   # was 0.25
+W_BUDGET        = 0.15   # was 0.20
+W_CENTRALITY    = 0.15   # was 0.20
+W_ACTION        = 0.20   # NEW — weight for action-quality score (creates GRPO variance)
 
-INIT_BUDGET  = 10_000  # dollar-equivalent label (env uses float units internally)
+INIT_BUDGET     = 10_000  # dollar-equivalent label (env uses float units internally)
+
+# ── Validity penalty magnitudes ───────────────────────────────────────────────
+# These are subtracted BEFORE clamping to [-1, 1].
+# Sized so that within a GRPO group, parse-fail gets a notably lower reward
+# than a syntactically valid action even if the env state is identical.
+PENALTY_PARSE_FAIL    = 0.30   # output couldn't be parsed at all → wait
+PENALTY_UNKNOWN_TGT   = 0.20   # action type valid but target_node_id is null/unknown
+PENALTY_ALREADY_DONE  = 0.12   # harden on already-hardened, recover on healthy node
+PENALTY_COOLDOWN      = 0.10   # action on cooldown
+PENALTY_BUDGET        = 0.08   # insufficient budget
+BONUS_PARSE_OK        = 0.05   # clean parse bonus — rewards good format even if env unchanged
+BONUS_VALID_ACTION    = 0.05   # env accepted the action without error
 
 
 def compute_reward(
@@ -31,20 +44,14 @@ def compute_reward(
     node_states: Dict[str, Dict],
     centrality: Dict[str, float],
     base_action_reward: float = 0.0,
+    action_quality: float = 0.0,   # NEW — per-completion validity/quality score
 ) -> float:
     """
-    Multi-component reward — identical contract to training reward.
+    Multi-component reward.
 
-    Components
-    ----------
-    hospital_health  (0.35)  Protect hospitals above all else.
-    cascade_penalty  (0.25)  Penalise cascade spread (depth proxy).
-    budget_efficiency(0.20)  Reward budget conservation.
-    centrality_defended(0.20) Reward protecting high-centrality nodes.
-
-    Returns
-    -------
-    float in [-1.0, 1.0]
+    action_quality is a [-1, 0] penalty or [0, +0.1] bonus injected by
+    grpo_verifier based on parse success and action validity. This is the
+    component that creates within-group reward VARIANCE for GRPO to learn from.
     """
     hospital_score = sector_health.get("hospital", 1.0)
     cascade_score  = 1.0 - min(1.0, cascade_depth / 5.0)
@@ -58,10 +65,11 @@ def compute_reward(
     centrality_score = defended_cent / total_cent
 
     composite = (
-        W_HOSPITAL   * hospital_score   +
-        W_CASCADE    * cascade_score    +
-        W_BUDGET     * budget_score     +
-        W_CENTRALITY * centrality_score +
+        W_HOSPITAL   * hospital_score    +
+        W_CASCADE    * cascade_score     +
+        W_BUDGET     * budget_score      +
+        W_CENTRALITY * centrality_score  +
+        W_ACTION     * action_quality    +   # NEW — per-completion variance
         base_action_reward
     )
     return round(max(-1.0, min(1.0, composite)), 4)
@@ -81,29 +89,93 @@ def grpo_verifier(
     init_budget: float = 10_000.0,
 ) -> float:
     """
-    GRPO reward verifier — called by TRL GRPOTrainer.
+    GRPO reward verifier — rewritten to produce within-group variance.
 
-    Evaluates the quality of the LLM's response given the resulting
-    environment state after the action was executed.
+    The critical change: we now compute a `validity_score` entirely from
+    the parsed action_taken dict. Different completions produce different
+    actions → different validity_scores → non-zero GRPO advantages → learning.
 
-    Args
-    ----
-    completion    : LLM's full response text (may include <think>…</think>).
-    obs           : Observation dict AFTER the action was executed.
-                    Expected keys: sector_health, cascade_depth, budget,
-                    node_states (each with "status"), centrality (optional).
-    action_taken  : Parsed action dict with at least {"action_type": str}.
-    init_budget   : Starting budget for normalisation.
-
-    Returns
-    -------
-    Scalar reward for GRPO update in [-1.0, 1.0].
+    action_taken must include:
+        action_type   : str   e.g. "harden", "wait", "recover"
+        target_node_id: str | None
+        invalid_reason: str   e.g. "", "unknown_target", "already_hardened",
+                              "cooldown_active", "insufficient_budget",
+                              "parse_failed", "node_not_failed"
+        action_valid  : bool  (True if env accepted the action)
     """
-    # Chain-of-thought bonus
+
+    # ── 1. Parse quality ──────────────────────────────────────────────────────
+    parse_failed   = action_taken.get("invalid_reason", "") == "parse_failed" \
+                     or action_taken.get("parse_failed", False)
+    invalid_reason = action_taken.get("invalid_reason", "")
+    action_valid   = action_taken.get("action_valid", False)
+    action_type    = action_taken.get("action_type", "wait")
+    target         = action_taken.get("target_node_id", None)
+
+    # ── 2. Compute validity_score ─────────────────────────────────────────────
+    # This is the component that differs BETWEEN completions in the same group.
+    if parse_failed:
+        validity_score = -PENALTY_PARSE_FAIL           # -0.30: truncated / garbled output
+
+    elif invalid_reason == "unknown_target":
+        validity_score = -PENALTY_UNKNOWN_TGT          # -0.20: null or hallucinated node
+
+    elif invalid_reason == "already_hardened":
+        validity_score = -PENALTY_ALREADY_DONE         # -0.12: repeated no-op
+
+    elif invalid_reason == "cooldown_active":
+        validity_score = -PENALTY_COOLDOWN             # -0.10: action on cooldown
+
+    elif invalid_reason == "insufficient_budget":
+        validity_score = -PENALTY_BUDGET               # -0.08: can't afford
+
+    elif invalid_reason == "node_not_failed":
+        validity_score = -PENALTY_ALREADY_DONE         # -0.12: recover on healthy node
+
+    elif not action_valid and invalid_reason:
+        # Any other env rejection
+        validity_score = -0.08
+
+    elif action_valid:
+        # Base parse success + valid action bonus
+        validity_score = BONUS_PARSE_OK + BONUS_VALID_ACTION   # +0.10
+
+        # ── 3. Strategic bonuses (valid actions only) ─────────────────────────
+        cascade_depth = obs.get("cascade_depth", 0)
+        pressure      = obs.get("system_pressure", 0.0)
+
+        # Repairing after cascade resolves — high value
+        if action_type in ("recover", "repair") and cascade_depth == 0:
+            validity_score += 0.08
+
+        # Isolation / shutdown when cascade is shallow — contained it
+        if action_type in ("isolate", "emergency_shutdown") and cascade_depth < 2:
+            validity_score += 0.06
+
+        # Hardening proactively before pressure builds
+        if action_type == "harden" and pressure < 0.3:
+            validity_score += 0.04
+
+        # Patch SCADA / deploy crew — expensive but correct
+        if action_type in ("patch_scada", "deploy_repair_crew"):
+            validity_score += 0.05
+
+        # Shed load when pressure is high — correct reactive action
+        if action_type == "shed_load" and pressure >= 0.5:
+            validity_score += 0.04
+
+        # Penalise wait when cascade is deepening — passive under pressure
+        if action_type == "wait" and pressure >= 0.6:
+            validity_score -= 0.08
+
+    else:
+        validity_score = 0.0   # neutral — shouldn't happen but safe fallback
+
+    # ── 4. Chain-of-thought bonus ─────────────────────────────────────────────
     has_cot   = "<think>" in completion and "</think>" in completion
     cot_bonus = 0.03 if has_cot else 0.0
 
-    # Build centrality map from obs if available
+    # ── 5. Base env-state reward (same for all completions in a group) ────────
     node_states = obs.get("node_states", {})
     centrality  = {
         nid: d.get("centrality", 0.0)
@@ -118,16 +190,8 @@ def grpo_verifier(
         init_budget      = init_budget,
         node_states      = node_states,
         centrality       = centrality,
+        action_quality   = validity_score,   # injected per-completion score
     )
-
-    # Action-quality bonuses
-    action_type = action_taken.get("action_type", "wait")
-    if action_type in ("repair", "recover") and obs.get("cascade_depth", 1) == 0:
-        base += 0.05   # Repair resolved the cascade
-    elif action_type in ("isolate", "emergency_shutdown") and obs.get("cascade_depth", 5) < 2:
-        base += 0.03   # Isolation contained cascade
-    elif action_type == "harden":
-        base += 0.02   # Proactive hardening is always good
 
     return round(max(-1.0, min(1.0, base + cot_bonus)), 4)
 

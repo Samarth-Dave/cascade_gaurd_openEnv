@@ -12,8 +12,8 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from openenv.core.env_server import create_app
 
-from server.cascade_environment import CascadeEnvironment
-from models import CascadeAction, CascadeObservation
+from cascade_guard.server.cascade_environment import CascadeEnvironment
+from cascade_guard.models import CascadeAction, CascadeObservation
 
 app = create_app(CascadeEnvironment, CascadeAction, CascadeObservation)
 

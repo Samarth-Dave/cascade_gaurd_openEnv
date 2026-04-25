@@ -387,6 +387,67 @@ def make_heuristic_policy(CascadeAction):
     return heuristic_policy
 
 
+def make_coverage_policy(CascadeAction, base_policy, coverage_target: dict):
+    """
+    Wraps a base heuristic policy so that underrepresented action types
+    are injected into the SFT dataset until minimum coverage is met.
+
+    coverage_target: {action_type: min_count}  — from ALL_ACTIONS config above.
+    """
+    counts = {a: 0 for a in coverage_target}
+    RARE_ACTIONS = [
+        "deploy_repair_crew", "emergency_shutdown", "patch_scada",
+        "redistribute_load", "request_mutual_aid", "controlled_cascade",
+        "multi_sector_lockdown", "reroute", "isolate",
+    ]
+
+    def policy(obs, env=None):
+        nonlocal counts
+
+        # Check if any rare action is below minimum
+        needs_coverage = [
+            a for a in RARE_ACTIONS
+            if counts.get(a, 0) < coverage_target.get(a, 8)
+        ]
+
+        if needs_coverage:
+            import random
+            action_type = random.choice(needs_coverage)
+            # Pick a valid target from obs if needed
+            node_states = getattr(obs, "node_states", None)
+            if node_states is None:
+                nodes = [n.node_id for n in obs.nodes] if hasattr(obs, "nodes") else []
+            else:
+                nodes = list(node_states.keys())
+            target = nodes[0] if nodes else None
+
+            # Two-argument actions
+            if action_type in ("reroute", "redistribute_load"):
+                src = nodes[0] if len(nodes) >= 1 else None
+                tgt = nodes[1] if len(nodes) >= 2 else nodes[0] if nodes else None
+                action = CascadeAction(action_type=action_type,
+                                       target_node_id=src,
+                                       parameters={"source": src, "target": tgt})
+            elif action_type in ("multi_sector_lockdown",):
+                action = CascadeAction(action_type=action_type, target_node_id=None)
+            else:
+                action = CascadeAction(action_type=action_type, target_node_id=target)
+
+            counts[action_type] = counts.get(action_type, 0) + 1
+            return action
+
+        # Default: use original heuristic
+        try:
+            action = base_policy(obs, env)
+        except TypeError:
+            action = base_policy(obs)
+        at = getattr(action, "action_type", "wait")
+        counts[at] = counts.get(at, 0) + 1
+        return action
+
+    return policy
+
+
 def make_training_sub_policies(CascadeAction, fallback_policy):
     """Teacher sub-policies used for diverse state collection."""
 
@@ -723,20 +784,14 @@ def make_training_sub_policies(CascadeAction, fallback_policy):
 # ══════════════════════════════════════════════════════════════════════════
 
 def _looks_parseable_action(text: str) -> bool:
-    if re.search(r"<action>\s*\w+\([^)]*\)\s*</action>", text, re.IGNORECASE):
+    """
+    Returns True only if the output contains a complete <action>...</action> pair.
+    A partial opening tag is NOT a parseable action — the model ran out of tokens.
+    """
+    # Must have opening tag, at least one word character, and closing tag
+    if re.search(r'<action>\s*\w+\([^)]*\)\s*</action>', text, re.IGNORECASE):
         return True
     if re.search(r'"action_type"\s*:\s*"\w+"', text, re.IGNORECASE):
-        return True
-    if re.search(
-        (
-            r"\b(harden|recover|isolate|shed_load|coordinate|wait"
-            r"|reroute|prioritize|deploy_repair_crew|emergency_shutdown"
-            r"|cross_sector_bridge|patch_scada|redistribute_load"
-            r"|request_mutual_aid|controlled_cascade|multi_sector_lockdown)\([^)]*\)"
-        ),
-        text,
-        re.IGNORECASE,
-    ):
         return True
     return False
 

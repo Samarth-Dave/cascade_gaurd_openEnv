@@ -305,6 +305,28 @@ def build_user_prompt(obs: "CascadeObservation") -> str:
         bar    = "#" * filled + "." * (10 - filled)
         lines.append(f"  {sector:12s}: {health:.2f} [{bar}]")
 
+    # ── Valid node IDs (prevents null/hallucinated targets) ─────────────────
+    valid_nodes = sorted(n.node_id for n in obs.nodes)
+    if valid_nodes:
+        node_list_str = ", ".join(valid_nodes)
+    else:
+        node_list_str = "(none visible)"
+
+    ACTION_REFERENCE = (
+        "harden(NODE), shed_load(NODE), coordinate(NODE), recover(NODE), "
+        "isolate(NODE), reroute(NODE, NODE), prioritize(NODE), "
+        "deploy_repair_crew(NODE), emergency_shutdown(NODE), "
+        "cross_sector_bridge(SECTOR_A, SECTOR_B), patch_scada(NODE), "
+        "redistribute_load(NODE_A, NODE_B), request_mutual_aid(SECTOR), "
+        "controlled_cascade(NODE), multi_sector_lockdown(), wait()"
+    )
+
+    lines.append("")
+    lines.append(f"VALID TARGET NODES (use exact IDs): {node_list_str}")
+    lines.append(f"AVAILABLE ACTIONS: {ACTION_REFERENCE}")
+    lines.append("FORMAT: <action>ACTION_TYPE(TARGET)</action>")
+    lines.append("Example: <action>harden(HOSP_1)</action>")
+
     lines.append("")
     lines.append("Choose your action. Think step-by-step, then respond in the required format.")
     return "\n".join(lines)
