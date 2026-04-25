@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import type { ReactNode } from "react";
@@ -38,10 +39,12 @@ interface CascadeContextValue {
   autoRun: boolean;
   setAutoRun: (value: boolean) => void;
   pending: boolean;
+  isResetting: boolean;
+  isAgentStepping: boolean;
   error: string | null;
   isConnected: boolean;
   resetEpisode: (task: Task, seed: number) => Promise<void>;
-  stepEpisode: (action: string, target: string | null) => Promise<void>;
+  stepEpisode: (action: string, target: string | null, target2?: string | null) => Promise<void>;
   runAgentStep: () => Promise<void>;
 }
 
@@ -60,7 +63,33 @@ export function CascadeProvider({ children }: { children: ReactNode }) {
   const [agentAction, setAgentAction] = useState<AgentAction | null>(null);
   const [autoRun, setAutoRun] = useState(false);
   const [pending, setPending] = useState(false);
+  const [isResetting, setIsResetting] = useState(false);
+  const [isAgentStepping, setIsAgentStepping] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Refs read inside the auto-run loop so it always sees the latest values
+  // without us re-spawning the loop on every state change.
+  const autoRunRef = useRef(autoRun);
+  const sessionIdRef = useRef(sessionId);
+  const stateRef = useRef(state);
+  const isAgentSteppingRef = useRef(isAgentStepping);
+  const isResettingRef = useRef(isResetting);
+
+  useEffect(() => {
+    autoRunRef.current = autoRun;
+  }, [autoRun]);
+  useEffect(() => {
+    sessionIdRef.current = sessionId;
+  }, [sessionId]);
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+  useEffect(() => {
+    isAgentSteppingRef.current = isAgentStepping;
+  }, [isAgentStepping]);
+  useEffect(() => {
+    isResettingRef.current = isResetting;
+  }, [isResetting]);
 
   const applyEpisodeState = useCallback((nextState: EpisodeState) => {
     setState(nextState);
@@ -123,13 +152,41 @@ export function CascadeProvider({ children }: { children: ReactNode }) {
     appendLog(stream.lastEvent.level, stream.lastEvent.message, stream.lastEvent.timestamp);
   }, [stream.lastEvent]);
 
+  // Auto-run loop. Spawned once per (autoRun on, sessionId) pair. The loop
+  // awaits each agent step to fully complete (including state mutation) before
+  // sleeping 1500ms and queuing the next one. A cancelled flag + the autoRun
+  // ref guarantees a clean exit when the user toggles auto-run off, the
+  // episode finishes, or the session changes.
   useEffect(() => {
-    if (!autoRun || !sessionId || !state || state.done || pending) return;
-    const timer = window.setTimeout(() => {
-      void runAgentStep();
-    }, 1500);
-    return () => window.clearTimeout(timer);
-  }, [autoRun, pending, sessionId, state]);
+    if (!autoRun || !sessionId) return;
+    let cancelled = false;
+    const sleep = (ms: number) =>
+      new Promise<void>((resolve) => window.setTimeout(resolve, ms));
+
+    const loop = async () => {
+      while (!cancelled && autoRunRef.current) {
+        if (isResettingRef.current) {
+          await sleep(150);
+          continue;
+        }
+        if (stateRef.current?.done) return;
+        if (isAgentSteppingRef.current) {
+          await sleep(100);
+          continue;
+        }
+        await runAgentStep();
+        if (cancelled || !autoRunRef.current) return;
+        if (stateRef.current?.done) return;
+        await sleep(1500);
+      }
+    };
+
+    void loop();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoRun, sessionId]);
 
   function appendLog(level: LogLine["level"], message: string, timestamp = new Date().toISOString()) {
     const formattedTime = new Date(timestamp).toLocaleTimeString("en-US", {
@@ -151,6 +208,7 @@ export function CascadeProvider({ children }: { children: ReactNode }) {
 
   async function resetEpisode(task: Task, seed: number) {
     setPending(true);
+    setIsResetting(true);
     setError(null);
     setAutoRun(false);
     try {
@@ -174,17 +232,25 @@ export function CascadeProvider({ children }: { children: ReactNode }) {
       setError(requestError instanceof Error ? requestError.message : "Failed to start episode.");
     } finally {
       setPending(false);
+      setIsResetting(false);
     }
   }
 
-  async function stepEpisode(action: string, target: string | null) {
+  async function stepEpisode(action: string, target: string | null, target2: string | null = null) {
     if (!sessionId) return;
     setPending(true);
     setError(null);
     try {
-      const result = await apiClient.stepEpisode(sessionId, action, target);
+      const result = await apiClient.stepEpisode(sessionId, action, target, target2);
       const nextState = applyStepResult(result);
-      handleStepResult(result, `Manual action ${action}${target ? ` -> ${target}` : ""}`, action, target, nextState);
+      const targetLabel = target2 ? `${target ?? ""},${target2}` : target;
+      handleStepResult(
+        result,
+        `Manual action ${action}${targetLabel ? ` -> ${targetLabel}` : ""}`,
+        action,
+        targetLabel ?? null,
+        nextState,
+      );
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Action failed.");
     } finally {
@@ -193,11 +259,15 @@ export function CascadeProvider({ children }: { children: ReactNode }) {
   }
 
   async function runAgentStep() {
-    if (!sessionId || pending || state?.done) return;
+    const activeSessionId = sessionIdRef.current ?? sessionId;
+    if (!activeSessionId) return;
+    if (isAgentSteppingRef.current || isResettingRef.current) return;
+    if (stateRef.current?.done) return;
     setPending(true);
+    setIsAgentStepping(true);
     setError(null);
     try {
-      const result = await apiClient.agentStep(sessionId);
+      const result = await apiClient.agentStep(activeSessionId);
       const nextState = applyStepResult(result);
       handleStepResult(
         result,
@@ -211,6 +281,7 @@ export function CascadeProvider({ children }: { children: ReactNode }) {
       setAutoRun(false);
     } finally {
       setPending(false);
+      setIsAgentStepping(false);
     }
   }
 
@@ -257,13 +328,32 @@ export function CascadeProvider({ children }: { children: ReactNode }) {
       autoRun,
       setAutoRun,
       pending,
+      isResetting,
+      isAgentStepping,
       error,
       isConnected: stream.isConnected,
       resetEpisode,
       stepEpisode,
       runAgentStep,
     }),
-    [agentAction, agentThinking, autoRun, config, currentEdges, currentNodes, error, lastStepResult, logs, pending, sessionId, state, stream.events, stream.isConnected],
+    [
+      agentAction,
+      agentThinking,
+      autoRun,
+      config,
+      currentEdges,
+      currentNodes,
+      error,
+      isAgentStepping,
+      isResetting,
+      lastStepResult,
+      logs,
+      pending,
+      sessionId,
+      state,
+      stream.events,
+      stream.isConnected,
+    ],
   );
 
   return <CascadeContext.Provider value={value}>{children}</CascadeContext.Provider>;

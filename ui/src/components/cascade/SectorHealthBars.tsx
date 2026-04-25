@@ -1,10 +1,15 @@
 import type { SectorHealth } from "@/types";
 
+// Sector palette per design spec:
+//   power   = red    (#e8192c)
+//   water   = blue   (accent #1446f5)
+//   hospital= purple (#7c3aed)
+//   telecom = cyan   (#06b6d4)
 const sectorMeta: Array<{ key: keyof SectorHealth; label: string; color: string }> = [
   { key: "power", label: "Power", color: "hsl(var(--red))" },
-  { key: "water", label: "Water", color: "hsl(var(--green))" },
+  { key: "water", label: "Water", color: "hsl(var(--accent))" },
   { key: "hospital", label: "Hospital", color: "hsl(var(--purple))" },
-  { key: "telecom", label: "Telecom", color: "hsl(var(--accent))" },
+  { key: "telecom", label: "Telecom", color: "#06b6d4" },
 ];
 
 export function SectorHealthBars({ sectorHealth }: { sectorHealth: SectorHealth }) {

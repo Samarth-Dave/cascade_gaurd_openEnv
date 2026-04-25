@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import asyncio
 import csv
-import io
 import json
 import logging
 import math
@@ -14,7 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from env_client import EnvClient
@@ -158,23 +156,39 @@ async def on_startup() -> None:
     MUMBAI_NODE_LOOKUP_BY_ID = _load_mumbai_real_node_lookup()
     MUMBAI_NODE_LOOKUP_LOWER = {key.lower(): value for key, value in MUMBAI_NODE_LOOKUP_BY_ID.items()}
     logger.info("Loaded %s Mumbai geo nodes from %s", len(MUMBAI_NODE_LOOKUP_BY_ID), REAL_NODES_PATH)
-    try:
-        loaded_source = await asyncio.to_thread(llm_client.load_model)
-        print(f"Model loaded: {loaded_source}")
-    except Exception:
-        print("Waiting for model...")
+
+    # Open the singleton WebSocket to the env server up front. The env has
+    # max_concurrent_envs=1, so the entire backend process must share one
+    # connection. Reset/step/state messages all flow through this socket.
+    from env_client import ensure_global_socket
+    await ensure_global_socket()
+
+    # Non-blocking model load — FastAPI startup completes immediately and the
+    # /api/health endpoint reports model_loaded=false until the loader thread
+    # finishes. /api/episode/agent-step returns 503 with a "model_loading"
+    # detail while load_state is "loading".
+    llm_client.load_model_async()
+    logger.info("Model load kicked off in background; serving traffic now.")
 
 
 @app.on_event("shutdown")
 async def on_shutdown() -> None:
     await session_manager.close_all_clients()
     await env_client.close()
+    from env_client import close_global_socket
+    await close_global_socket()
 
 
 @app.get("/api/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
     env_connected = await env_client.health_check()
-    return HealthResponse(status="ok", env_connected=env_connected, model_loaded=llm_client.is_loaded())
+    return HealthResponse(
+        status="ok",
+        env_connected=env_connected,
+        model_loaded=llm_client.is_loaded(),
+        model_load_state=llm_client.load_state,
+        model_load_error=llm_client.load_error,
+    )
 
 
 @app.post("/api/episode/reset", response_model=EpisodeResetResponse)
@@ -216,7 +230,13 @@ async def reset_episode(payload: EpisodeResetRequest) -> EpisodeResetResponse:
 @app.post("/api/episode/step", response_model=StepResult)
 async def step_episode(payload: EpisodeStepRequest) -> StepResult:
     session = await _require_session(payload.session_id)
-    env_action, target, parameters = _normalize_action(payload.action, payload.target, session.raw_observation)
+    env_action, target, parameters = _normalize_action(
+        payload.action,
+        payload.target,
+        session.raw_observation,
+        target2=payload.target2,
+        explicit_parameters=payload.parameters,
+    )
     return await _execute_step(session.session_id, env_action, target, parameters)
 
 
@@ -225,16 +245,43 @@ async def agent_step(payload: Dict[str, str]) -> StepResult:
     session_id = payload.get("session_id")
     if not session_id:
         raise HTTPException(status_code=422, detail="session_id is required")
+    if not llm_client.is_loaded():
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "Model loading, please wait",
+                "load_state": llm_client.load_state,
+                "load_error": llm_client.load_error,
+            },
+        )
     session = await _require_session(session_id)
     decision = await llm_client.get_action(session.raw_observation)
-    env_action = str(decision["action"])
-    target = decision.get("target")
-    _, _, parameters = _normalize_action(env_action, target, session.raw_observation)
-    display_action = AgentAction(action=REVERSE_ACTION_ALIASES.get(env_action, env_action.upper()), target=target)
+    raw_action = str(decision["action"])
+    raw_target = decision.get("target")
+    raw_parameters = decision.get("parameters") or {}
+    norm_action, norm_target, parameters = _normalize_action(
+        raw_action,
+        raw_target,
+        session.raw_observation,
+        explicit_parameters=raw_parameters or None,
+    )
+    display_action = AgentAction(
+        action=REVERSE_ACTION_ALIASES.get(norm_action, norm_action.upper()),
+        target=raw_target if raw_target else norm_target,
+    )
+    logger.info(
+        "agent_step session=%s decision_action=%s decision_target=%s -> norm=%s target=%s params=%s",
+        session_id,
+        raw_action,
+        raw_target,
+        norm_action,
+        norm_target,
+        parameters,
+    )
     return await _execute_step(
         session_id,
-        env_action,
-        target,
+        norm_action,
+        norm_target,
         parameters,
         agent_thinking=decision["thinking"],
         agent_action=display_action,
@@ -390,12 +437,22 @@ async def _execute_step(
     previous_observation = session.raw_observation
     step_payload = await session.env_client.step(env_action, target, parameters)
     raw_observation = dict(step_payload.get("observation", {}))
+
+    # The env server's WS session keeps a single CascadeEnvironment alive,
+    # so the response should always contain the live observation. The
+    # fallback below only fires if the env transiently drops a field.
     if not raw_observation.get("nodes"):
+        logger.warning(
+            "Env step returned no nodes for session=%s action=%s — "
+            "restoring from session cache. payload_keys=%s",
+            session_id, env_action, list(step_payload.keys()),
+        )
         raw_observation["nodes"] = previous_observation.get("nodes", [])
     if not raw_observation.get("edges"):
         raw_observation["edges"] = previous_observation.get("edges", [])
     if not raw_observation.get("sector_summary"):
         raw_observation["sector_summary"] = previous_observation.get("sector_summary", {})
+
     raw_state = await session.env_client.get_state()
 
     episode_state = _build_episode_state(session_id, session.requested_task, raw_observation, raw_state)
@@ -434,6 +491,19 @@ async def _execute_step(
         agent_thinking=agent_thinking,
         agent_action=agent_action,
     )
+    low_health = [(n.id, n.health_pct, n.status) for n in episode_state.nodes if n.health_pct < 70]
+    logger.info(
+        "Step %s/%s session=%s action=%s target=%s reward=%.3f score=%.3f cascade=%s low_health=%s",
+        episode_state.step,
+        episode_state.max_steps,
+        session_id,
+        env_action,
+        target,
+        item.reward_step,
+        score,
+        episode_state.cascade_depth,
+        low_health[:6],
+    )
     for event in _derive_events(previous_observation, raw_observation, result):
         await session_manager.publish(session_id, event)
     if result.done:
@@ -448,18 +518,76 @@ async def _require_session(session_id: str):
     return session
 
 
-def _normalize_action(action: str, target: Optional[str], raw_observation: Dict[str, Any]) -> tuple[str, Optional[str], Dict[str, Any]]:
+_NULL_TARGET_ACTIONS = {"wait", "multi_sector_lockdown"}
+_SECTOR_ACTIONS = {"request_mutual_aid", "cross_sector_bridge"}
+_TWO_NODE_ACTIONS = {"reroute", "redistribute_load"}
+
+
+def _coerce_target_pair(target: Optional[str], target2: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """Resolve (a, b) for two-target actions from either an explicit target2
+    or a single comma-separated target string ("A,B")."""
+    if target2 is not None:
+        return (target.strip() if target else None, target2.strip() or None)
+    if target and "," in target:
+        parts = [p.strip() for p in target.split(",", 1)]
+        if len(parts) == 2:
+            return (parts[0] or None, parts[1] or None)
+    return (target.strip() if isinstance(target, str) else target, None)
+
+
+def _normalize_action(
+    action: str,
+    target: Optional[str],
+    raw_observation: Dict[str, Any],
+    *,
+    target2: Optional[str] = None,
+    explicit_parameters: Optional[Dict[str, Any]] = None,
+) -> tuple[str, Optional[str], Dict[str, Any]]:
+    """Map a UI/agent action into the (action_type, target_node_id, parameters)
+    tuple expected by the env server. Handles every multi-target, sector-only
+    and null-target action defined by ALLOWED_ACTION_TYPES so the env server
+    never receives a malformed payload."""
     env_action = ACTION_ALIASES.get(action.strip().upper(), action.strip().lower())
-    parameters: Dict[str, Any] = {}
-    normalized_target = target
+    parameters: Dict[str, Any] = dict(explicit_parameters) if explicit_parameters else {}
+    normalized_target = target.strip() if isinstance(target, str) and target else None
+
+    if env_action in _NULL_TARGET_ACTIONS:
+        return env_action, None, parameters
+
     if env_action == "reroute":
-        source = _pick_reroute_source(raw_observation, target)
-        if source and target:
-            parameters = {"source": source, "target": target}
-            normalized_target = source
-        else:
-            env_action = "wait"
-            normalized_target = None
+        a, b = _coerce_target_pair(target, target2)
+        # b = node that lost its upstream; a = healthy alternate (auto-pick if missing)
+        target_node = b or a
+        source_node = a if (a and a != target_node) else _pick_reroute_source(raw_observation, target_node)
+        if not source_node or not target_node or source_node == target_node:
+            return "wait", None, {}
+        parameters.setdefault("source", source_node)
+        parameters.setdefault("target", target_node)
+        return env_action, source_node, parameters
+
+    if env_action == "redistribute_load":
+        a, b = _coerce_target_pair(target, target2)
+        if not a or not b or a == b:
+            return "wait", None, {}
+        parameters.setdefault("node_a", a)
+        parameters.setdefault("node_b", b)
+        return env_action, a, parameters
+
+    if env_action == "cross_sector_bridge":
+        a, b = _coerce_target_pair(target, target2)
+        if not a or not b or a == b:
+            return "wait", None, {}
+        parameters.setdefault("sector_a", a)
+        parameters.setdefault("sector_b", b)
+        return env_action, None, parameters
+
+    if env_action == "request_mutual_aid":
+        sector = (target or "").strip() or parameters.get("sector")
+        if not sector:
+            return "wait", None, {}
+        parameters.setdefault("sector", sector)
+        return env_action, None, parameters
+
     return env_action, normalized_target, parameters
 
 

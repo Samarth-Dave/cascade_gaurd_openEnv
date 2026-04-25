@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
-import { ChevronDown, RefreshCw } from "lucide-react";
-import { useState } from "react";
+import { ChevronDown, Download, Loader2, Play, RotateCcw } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 
 import { apiClient } from "@/api/client";
 import { InfrastructureGraph } from "@/components/cascade/InfrastructureGraph";
@@ -27,20 +27,80 @@ const taskOptions: Task[] = [
   "task_cyberattack",
 ];
 
-const manualActions = ["MONITOR", "REPAIR", "ISOLATE", "REROUTE"];
+type ManualActionTargetKind = "none" | "node" | "two_nodes" | "sector" | "two_sectors";
 
-function getActionGuard(action: string, node: InfraNode | null) {
-  if (action !== "MONITOR" && !node) {
-    return { disabled: true, message: "Select a target node before executing this action." };
-  }
-  if (!node) {
+interface ManualActionSpec {
+  id: string;
+  label: string;
+  description: string;
+  targetKind: ManualActionTargetKind;
+  cost?: string;
+}
+
+const manualActions: ManualActionSpec[] = [
+  { id: "recover", label: "recover", description: "Recover a failed node (upstream must be operational)", targetKind: "node" },
+  { id: "harden", label: "harden", description: "Harden a node before storms", cost: "2.0", targetKind: "node" },
+  { id: "isolate", label: "isolate", description: "Quarantine a failed node to stop cascade", targetKind: "node" },
+  { id: "shed_load", label: "shed_load", description: "Shed load from non-critical, non-hospital node (load > 0.5)", targetKind: "node" },
+  { id: "coordinate", label: "coordinate", description: "Clear observation delay for a sector", targetKind: "node" },
+  { id: "reroute", label: "reroute(A,B)", description: "Reroute supply: source A to target B", cost: "0.6", targetKind: "two_nodes" },
+  { id: "prioritize", label: "prioritize", description: "Boost a single node for 3 steps", targetKind: "node" },
+  { id: "deploy_repair_crew", label: "deploy_repair_crew", description: "Speed up an in-progress repair", cost: "1.2", targetKind: "node" },
+  { id: "emergency_shutdown", label: "emergency_shutdown", description: "Force shutdown when health < 30%", cost: "0.2", targetKind: "node" },
+  { id: "cross_sector_bridge", label: "cross_sector_bridge(SA,SB)", description: "Bridge observability between two sectors", cost: "1.5", targetKind: "two_sectors" },
+  { id: "patch_scada", label: "patch_scada", description: "Patch a node's SCADA controller", cost: "0.8", targetKind: "node" },
+  { id: "redistribute_load", label: "redistribute_load(A,B)", description: "Move load from node A to node B (same sector)", cost: "0.5", targetKind: "two_nodes" },
+  { id: "request_mutual_aid", label: "request_mutual_aid(SECTOR)", description: "Sector-wide health boost (one per episode)", cost: "2.5", targetKind: "sector" },
+  { id: "controlled_cascade", label: "controlled_cascade", description: "Sacrifice a node to stabilise neighbors", targetKind: "node" },
+  { id: "multi_sector_lockdown", label: "multi_sector_lockdown", description: "Last-resort 2-step lockdown (no cascade)", cost: "2.0", targetKind: "none" },
+  { id: "wait", label: "wait", description: "Skip this step (only when nothing actionable)", targetKind: "none" },
+];
+
+const SECTOR_OPTIONS = ["power", "water", "hospital", "telecom"];
+
+function findManualAction(id: string): ManualActionSpec {
+  return manualActions.find((a) => a.id === id) ?? manualActions[0];
+}
+
+function getActionGuard(spec: ManualActionSpec, target: string | null, target2: string | null, node: InfraNode | null) {
+  if (spec.targetKind === "none") {
     return { disabled: false, message: null };
   }
-  if (action === "REPAIR" && node.is_operational) {
-    return { disabled: true, message: "Repair is only useful on failed nodes. This target is still operational." };
+  if (spec.targetKind === "sector") {
+    if (!target) return { disabled: true, message: "Pick a sector before executing this action." };
+    return { disabled: false, message: null };
   }
-  if (action === "ISOLATE" && node.is_operational) {
-    return { disabled: true, message: "Isolate only makes sense for failed nodes. This target is still operational." };
+  if (spec.targetKind === "two_sectors") {
+    if (!target || !target2) return { disabled: true, message: "Pick both sectors before executing." };
+    if (target === target2) return { disabled: true, message: "Sector A and sector B must differ." };
+    return { disabled: false, message: null };
+  }
+  if (spec.targetKind === "two_nodes") {
+    if (!target || !target2) return { disabled: true, message: "Pick both source and target nodes before executing." };
+    if (target === target2) return { disabled: true, message: "Source and target must differ." };
+    return { disabled: false, message: null };
+  }
+  if (spec.targetKind === "node") {
+    if (!node) return { disabled: true, message: "Select a target node before executing this action." };
+    if (spec.id === "recover" && node.is_operational) {
+      return { disabled: true, message: "Recover only applies to failed nodes." };
+    }
+    if (spec.id === "isolate" && node.is_operational) {
+      return { disabled: true, message: "Isolate only applies to failed nodes." };
+    }
+    if (spec.id === "harden" && node.is_hardened) {
+      return { disabled: true, message: "This node is already hardened." };
+    }
+    if (spec.id === "emergency_shutdown" && node.health_pct >= 30) {
+      return { disabled: true, message: "Emergency shutdown requires node health below 30%." };
+    }
+    if (spec.id === "shed_load" && node.sector === "hospital") {
+      return { disabled: true, message: "Cannot shed load from hospital nodes." };
+    }
+    if (spec.id === "shed_load" && node.is_critical) {
+      return { disabled: true, message: "Cannot shed load from critical nodes." };
+    }
+    return { disabled: false, message: null };
   }
   return { disabled: false, message: null };
 }
@@ -58,6 +118,8 @@ export default function SimulatePage() {
     autoRun,
     setAutoRun,
     pending,
+    isResetting,
+    isAgentStepping,
     error,
     isConnected,
     resetEpisode,
@@ -65,9 +127,59 @@ export default function SimulatePage() {
     runAgentStep,
     sessionId,
   } = useCascade();
-  const [manualAction, setManualAction] = useState("REPAIR");
+  const [manualAction, setManualAction] = useState("recover");
   const [manualTarget, setManualTarget] = useState<string | null>(null);
+  const [manualTarget2, setManualTarget2] = useState<string | null>(null);
   const [thinkingOpen, setThinkingOpen] = useState(true);
+  const [thinkingProgress, setThinkingProgress] = useState(0);
+  const progressIntervalRef = useRef<number | null>(null);
+  const progressHideTimeoutRef = useRef<number | null>(null);
+
+  // The progress bar is bound to the actual agent-step API call lifecycle
+  // (isAgentStepping). It animates asymptotically toward 90% so it never
+  // visibly stalls, then jumps to 100% when the response arrives, holds for
+  // 500ms, and finally resets/hides.
+  const isAgentThinking = isAgentStepping || thinkingProgress > 0;
+
+  useEffect(() => {
+    if (isAgentStepping) {
+      if (progressHideTimeoutRef.current) {
+        window.clearTimeout(progressHideTimeoutRef.current);
+        progressHideTimeoutRef.current = null;
+      }
+      if (progressIntervalRef.current) {
+        window.clearInterval(progressIntervalRef.current);
+      }
+      setThinkingProgress(8);
+      progressIntervalRef.current = window.setInterval(() => {
+        setThinkingProgress((prev) => {
+          // Asymptotic ease toward 90% — visually keeps moving, never stalls.
+          const next = prev + (90 - prev) * 0.06;
+          return next > 90 ? 90 : next;
+        });
+      }, 180);
+      return;
+    }
+
+    if (progressIntervalRef.current) {
+      window.clearInterval(progressIntervalRef.current);
+      progressIntervalRef.current = null;
+    }
+
+    // Step finished — only flip to 100 if a step was actually in flight.
+    setThinkingProgress((prev) => (prev > 0 ? 100 : 0));
+    progressHideTimeoutRef.current = window.setTimeout(() => {
+      setThinkingProgress(0);
+      progressHideTimeoutRef.current = null;
+    }, 500);
+  }, [isAgentStepping]);
+
+  useEffect(() => {
+    return () => {
+      if (progressIntervalRef.current) window.clearInterval(progressIntervalRef.current);
+      if (progressHideTimeoutRef.current) window.clearTimeout(progressHideTimeoutRef.current);
+    };
+  }, []);
 
   const graphQuery = useQuery({
     queryKey: ["environment-graph", sessionId],
@@ -75,9 +187,115 @@ export default function SimulatePage() {
     enabled: !state,
   });
 
+  // Poll model status until it's ready so the Agent Step button can light up
+  // automatically once the background loader thread finishes.
+  const healthQuery = useQuery({
+    queryKey: ["health"],
+    queryFn: () => apiClient.getHealth(),
+    refetchInterval: (query) => (query.state.data?.model_loaded ? false : 1500),
+    refetchOnWindowFocus: false,
+  });
+  const modelLoaded = healthQuery.data?.model_loaded ?? false;
+  const modelLoadState = healthQuery.data?.model_load_state ?? "idle";
+  const modelLoading = !modelLoaded && (modelLoadState === "loading" || modelLoadState === "idle");
+
   const availableTargets = currentNodes;
-  const selectedManualNode = availableTargets.find((node) => node.id === manualTarget) ?? null;
-  const manualActionGuard = getActionGuard(manualAction, selectedManualNode);
+  const manualActionSpec = findManualAction(manualAction);
+  const targetKind = manualActionSpec.targetKind;
+  const selectedManualNode =
+    targetKind === "node" || targetKind === "two_nodes"
+      ? availableTargets.find((node) => node.id === manualTarget) ?? null
+      : null;
+  const manualActionGuard = getActionGuard(manualActionSpec, manualTarget, manualTarget2, selectedManualNode);
+
+  const handleManualActionChange = (next: string) => {
+    setManualAction(next);
+    setManualTarget(null);
+    setManualTarget2(null);
+  };
+
+  const submitManualAction = () => {
+    if (manualActionGuard.disabled) return;
+    if (targetKind === "none") {
+      void stepEpisode(manualActionSpec.id, null, null);
+    } else if (targetKind === "sector") {
+      void stepEpisode(manualActionSpec.id, manualTarget, null);
+    } else if (targetKind === "two_sectors" || targetKind === "two_nodes") {
+      void stepEpisode(manualActionSpec.id, manualTarget, manualTarget2);
+    } else {
+      void stepEpisode(manualActionSpec.id, manualTarget, null);
+    }
+  };
+
+  // Agent + auto-run controls must be locked until the reset has produced
+  // a session AND nodes are loaded. Pending here covers any in-flight call.
+  // We additionally gate on modelLoaded so the user can't fire an agent step
+  // while the local Qwen model is still being loaded in the background.
+  const episodeReady = !!sessionId && !isResetting && currentNodes.length > 0;
+  const agentDisabled = !episodeReady || pending || !!state?.done || !modelLoaded;
+  const autoRunDisabled = !episodeReady || !!state?.done || !modelLoaded;
+  const startDisabled = isResetting || pending;
+
+  const handleResetClick = () => {
+    void resetEpisode(config.task, config.seed);
+  };
+
+  const handleAgentStepClick = () => {
+    void runAgentStep();
+  };
+
+  const handleDownloadReport = () => {
+    if (!state || !sessionId) return;
+    const report = {
+      generated_at: new Date().toISOString(),
+      session_id: sessionId,
+      task: state.task,
+      seed: config.seed,
+      status: state.done ? "COMPLETED" : "IN_PROGRESS",
+      summary: {
+        episode_score: state.episode_score,
+        steps_taken: state.step,
+        max_steps: state.max_steps,
+        budget_remaining: state.budget,
+        cascade_depth: state.cascade_depth,
+      },
+      sector_health: state.sector_health,
+      last_step_result: lastStepResult ?? null,
+      grader_breakdown: lastStepResult?.grader_breakdown ?? null,
+      agent_thinking: agentThinking || null,
+      nodes: currentNodes.map((node) => ({
+        id: node.id,
+        label: node.label,
+        sector: node.sector,
+        status: node.status,
+        health_pct: node.health_pct,
+        is_operational: node.is_operational,
+        is_hardened: node.is_hardened,
+      })),
+      edges: currentEdges.map((edge) => ({
+        id: edge.id,
+        source: edge.source,
+        target: edge.target,
+        kind: edge.kind,
+        status: edge.status,
+      })),
+      event_log: logs.map((line) => ({
+        timestamp: line.timestamp,
+        level: line.level,
+        message: line.message,
+      })),
+    };
+
+    const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `cascadeguard_episode_${state.task}_${sessionId.slice(0, 8)}.json`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(url);
+  };
 
   return (
     <div className="space-y-6">
@@ -124,9 +342,27 @@ export default function SimulatePage() {
               />
             </div>
 
-            <Button className="w-full" onClick={() => resetEpisode(config.task, config.seed)} disabled={pending}>
-              {pending ? "Starting..." : "Start Episode"}
-            </Button>
+            <div className="grid grid-cols-[1fr_auto] gap-2">
+              <Button
+                className="h-11 w-full bg-[hsl(var(--ink))] text-white hover:bg-[hsl(var(--ink))]/90"
+                onClick={handleResetClick}
+                disabled={startDisabled}
+              >
+                <Play className="h-4 w-4" />
+                {isResetting ? "Starting..." : "Start Episode"}
+              </Button>
+              <Button
+                variant="outline"
+                size="icon"
+                className="h-11 w-11 border-black/10 hover:bg-black/[0.04]"
+                onClick={handleResetClick}
+                disabled={startDisabled}
+                aria-label="Reset"
+                title="Reset episode"
+              >
+                <RotateCcw className="h-4 w-4" />
+              </Button>
+            </div>
           </div>
 
           <div className="mt-6 space-y-4 rounded-2xl border border-black/8 bg-black/[0.03] p-4">
@@ -139,11 +375,11 @@ export default function SimulatePage() {
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-foreground/40">Score</div>
-                    <div className="text-2xl font-semibold">{state.episode_score.toFixed(3)}</div>
+                    <div className="text-3xl font-bold tracking-tight">{state.episode_score.toFixed(3)}</div>
                   </div>
                   <div>
                     <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-foreground/40">Budget</div>
-                    <div className="text-2xl font-semibold">{state.budget.toFixed(1)}</div>
+                    <div className="text-3xl font-bold tracking-tight">{state.budget.toFixed(1)}</div>
                   </div>
                 </div>
                 <div>
@@ -184,15 +420,46 @@ export default function SimulatePage() {
           </div>
 
           <div className="mt-6 space-y-3">
-            <Button className="w-full" variant="secondary" onClick={() => void runAgentStep()} disabled={!sessionId || pending || state?.done}>
-              Agent Step
+            <Button
+              className="h-11 w-full bg-[hsl(var(--accent))] text-white hover:bg-[hsl(var(--accent))]/90 disabled:opacity-50"
+              onClick={handleAgentStepClick}
+              disabled={agentDisabled}
+            >
+              {modelLoading ? (
+                <span className="inline-flex items-center gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Model Loading...
+                </span>
+              ) : modelLoadState === "error" ? (
+                "Model Failed to Load"
+              ) : isAgentStepping ? (
+                "Agent thinking..."
+              ) : (
+                "Agent Step"
+              )}
             </Button>
+            {isAgentThinking ? (
+              <div className="space-y-1.5 rounded-2xl border border-black/8 bg-black/[0.03] px-4 py-3">
+                <div className="flex items-center justify-between font-mono text-[10px] uppercase tracking-[0.18em] text-foreground/55">
+                  <span>Agent thinking...</span>
+                  <span>{Math.round(thinkingProgress)}%</span>
+                </div>
+                <div className="h-2 overflow-hidden rounded-full bg-black/8">
+                  <div
+                    className="h-full rounded-full bg-[hsl(var(--accent))] transition-[width] duration-300 ease-out"
+                    style={{ width: `${thinkingProgress}%` }}
+                  />
+                </div>
+              </div>
+            ) : null}
             <div className="flex items-center justify-between rounded-2xl border border-black/8 bg-black/[0.03] px-4 py-3">
               <div>
-                <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-foreground/40">Auto-Run</div>
-                <div className="text-sm text-foreground/60">Fire every 1.5 seconds until done</div>
+                <div className="text-sm font-semibold tracking-tight">Auto-Run</div>
+                <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-foreground/50">
+                  Runs steps until episode ends
+                </div>
               </div>
-              <Switch checked={autoRun} onCheckedChange={setAutoRun} disabled={!sessionId || !!state?.done} />
+              <Switch checked={autoRun} onCheckedChange={setAutoRun} disabled={autoRunDisabled} />
             </div>
           </div>
 
@@ -230,43 +497,149 @@ export default function SimulatePage() {
             <div className="mt-4 space-y-4">
               <div className="space-y-2">
                 <Label>Action</Label>
-                <Select value={manualAction} onValueChange={setManualAction}>
+                <Select value={manualAction} onValueChange={handleManualActionChange}>
                   <SelectTrigger>
                     <SelectValue placeholder="Select action" />
                   </SelectTrigger>
                   <SelectContent>
                     {manualActions.map((action) => (
-                      <SelectItem key={action} value={action}>
-                        {action}
+                      <SelectItem key={action.id} value={action.id}>
+                        <div className="flex items-baseline gap-2">
+                          <span className="font-mono text-[12px]">{action.label}</span>
+                          {action.cost ? (
+                            <span className="font-mono text-[10px] text-foreground/50">{action.cost}</span>
+                          ) : null}
+                        </div>
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
+                <p className="font-mono text-[10px] leading-relaxed text-foreground/55">
+                  {manualActionSpec.description}
+                </p>
               </div>
-              <div className="space-y-2">
-                <Label>Target Node</Label>
-                <Select value={manualTarget ?? ""} onValueChange={setManualTarget}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select target" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {availableTargets.map((node) => (
-                      <SelectItem key={node.id} value={node.id}>
-                        {node.id}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+
+              {targetKind === "none" ? (
+                <div className="rounded-2xl border border-black/8 bg-black/[0.03] px-3 py-2 font-mono text-[11px] text-foreground/55">
+                  This action takes no target.
+                </div>
+              ) : null}
+
+              {targetKind === "node" ? (
+                <div className="space-y-2">
+                  <Label>Target Node</Label>
+                  <Select value={manualTarget ?? ""} onValueChange={setManualTarget}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select target node" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {availableTargets.map((node) => (
+                        <SelectItem key={node.id} value={node.id}>
+                          {node.id}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              ) : null}
+
+              {targetKind === "two_nodes" ? (
+                <>
+                  <div className="space-y-2">
+                    <Label>Source Node (A)</Label>
+                    <Select value={manualTarget ?? ""} onValueChange={setManualTarget}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select source node" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {availableTargets.map((node) => (
+                          <SelectItem key={node.id} value={node.id}>
+                            {node.id}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Target Node (B)</Label>
+                    <Select value={manualTarget2 ?? ""} onValueChange={setManualTarget2}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select target node" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {availableTargets.map((node) => (
+                          <SelectItem key={node.id} value={node.id}>
+                            {node.id}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </>
+              ) : null}
+
+              {targetKind === "sector" ? (
+                <div className="space-y-2">
+                  <Label>Sector</Label>
+                  <Select value={manualTarget ?? ""} onValueChange={setManualTarget}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select sector" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {SECTOR_OPTIONS.map((sector) => (
+                        <SelectItem key={sector} value={sector}>
+                          {sector}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              ) : null}
+
+              {targetKind === "two_sectors" ? (
+                <>
+                  <div className="space-y-2">
+                    <Label>Sector A</Label>
+                    <Select value={manualTarget ?? ""} onValueChange={setManualTarget}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select sector A" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {SECTOR_OPTIONS.map((sector) => (
+                          <SelectItem key={sector} value={sector}>
+                            {sector}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Sector B</Label>
+                    <Select value={manualTarget2 ?? ""} onValueChange={setManualTarget2}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select sector B" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {SECTOR_OPTIONS.map((sector) => (
+                          <SelectItem key={sector} value={sector}>
+                            {sector}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </>
+              ) : null}
+
               {manualActionGuard.message ? (
                 <div className="rounded-2xl border border-[hsl(var(--amber))]/25 bg-[hsl(var(--amber))]/10 px-3 py-2 text-sm text-[hsl(var(--amber))]">
                   {manualActionGuard.message}
                 </div>
               ) : null}
               <Button
-                className="w-full"
-                onClick={() => void stepEpisode(manualAction, manualTarget)}
-                disabled={!sessionId || pending || manualActionGuard.disabled}
+                className="h-11 w-full bg-[hsl(var(--accent))] text-white hover:bg-[hsl(var(--accent))]/90 disabled:opacity-50"
+                onClick={submitManualAction}
+                disabled={!episodeReady || pending || manualActionGuard.disabled}
               >
                 Execute
               </Button>
@@ -320,6 +693,29 @@ export default function SimulatePage() {
           <TerminalLog lines={logs} />
         </div>
       </div>
+
+      <Card className="rounded-[28px] border-black/10 bg-white/88 p-5 shadow-[0_24px_60px_-36px_rgba(0,0,0,0.4)]">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-foreground/45">Episode Report</div>
+            <div className="mt-1 text-lg font-semibold tracking-tight">
+              Download Full Episode Report
+            </div>
+            <div className="mt-1 text-sm text-foreground/60">
+              Snapshots stats, sector health, grader breakdown, node graph, and the full event log
+              into a single JSON report.
+            </div>
+          </div>
+          <Button
+            className="h-11 bg-[hsl(var(--accent))] px-5 text-white hover:bg-[hsl(var(--accent))]/90 disabled:opacity-50"
+            onClick={handleDownloadReport}
+            disabled={!state || !sessionId}
+          >
+            <Download className="h-4 w-4" />
+            Download Report
+          </Button>
+        </div>
+      </Card>
     </div>
   );
 }

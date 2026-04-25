@@ -173,10 +173,14 @@ export interface GraphResponse {
   session_id: string | null;
 }
 
+export type ModelLoadState = "idle" | "loading" | "ready" | "error";
+
 export interface HealthResponse {
   status: string;
   env_connected: boolean;
   model_loaded: boolean;
+  model_load_state?: ModelLoadState;
+  model_load_error?: string | null;
 }
 
 export interface WsEvent {

@@ -90,10 +90,15 @@ export const apiClient = {
       json: { task, seed },
     }),
 
-  stepEpisode: (sessionId: string, action: string, target: string | null) =>
+  stepEpisode: (
+    sessionId: string,
+    action: string,
+    target: string | null,
+    target2: string | null = null,
+  ) =>
     request<StepResult>(pathForApi("/api/episode/step"), {
       method: "POST",
-      json: { session_id: sessionId, action, target },
+      json: { session_id: sessionId, action, target, target2 },
     }),
 
   agentStep: (sessionId: string) =>

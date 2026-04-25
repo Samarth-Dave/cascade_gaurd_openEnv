@@ -136,9 +136,17 @@ export function InfrastructureGraph({
                 return null;
               }
 
+              const visualStatus = getNodeVisualStatus(node);
+              // The key includes the visual bucket + integer health so React
+              // remounts the marker whenever the node transitions between
+              // healthy / degraded / critical / isolated. Without this,
+              // react-leaflet sometimes keeps a stale Leaflet path style and
+              // the map appears "frozen" even though state has updated.
+              const markerKey = `${node.id}-${visualStatus}-${node.health_pct}`;
+
               return (
                 <CircleMarker
-                  key={node.id}
+                  key={markerKey}
                   center={position}
                   radius={10}
                   eventHandlers={{ click: () => setSelectedNodeId(node.id) }}
@@ -147,7 +155,7 @@ export function InfrastructureGraph({
                     weight: 2,
                     fillColor: color,
                     fillOpacity: 0.95,
-                    className: node.status === "critical" ? "node-critical-pulse" : undefined,
+                    className: visualStatus === "critical" ? "node-critical-pulse" : undefined,
                   }}
                 >
                   <Tooltip direction="top" offset={[0, -8]}>

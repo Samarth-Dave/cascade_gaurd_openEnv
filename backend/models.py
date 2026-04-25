@@ -30,6 +30,9 @@ class HealthResponse(BaseModel):
     status: str
     env_connected: bool
     model_loaded: bool
+    # Lifecycle: "idle" | "loading" | "ready" | "error".
+    model_load_state: str = "idle"
+    model_load_error: Optional[str] = None
 
 
 class SectorHealth(BaseModel):
@@ -105,6 +108,14 @@ class EpisodeStepRequest(BaseModel):
     session_id: str
     action: str
     target: Optional[str] = None
+    # Optional second target for multi-target actions:
+    #   reroute(source, target)
+    #   cross_sector_bridge(sector_a, sector_b)
+    #   redistribute_load(node_a, node_b)
+    target2: Optional[str] = None
+    # Optional explicit parameters dict — overrides target/target2 derivation
+    # when callers want full control over the action payload.
+    parameters: Optional[Dict[str, Any]] = None
 
 
 class AgentAction(BaseModel):

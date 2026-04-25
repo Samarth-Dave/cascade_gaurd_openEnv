@@ -49,94 +49,23 @@ CORE_ACTION_TYPES = (
 
 
 SYSTEM_PROMPT = """\
-You are an AI infrastructure coordinator managing a real-world cross-sector critical infrastructure network.
-Your goal is to keep power, water, hospital, and telecom systems operational during cascading failures.
+You coordinate cross-sector critical infrastructure (power, water, hospital, telecom). Hospitals = top priority.
 
-Each node in the network corresponds to a REAL infrastructure site (e.g. "KEM Hospital Parel",
-"Tata Power Trombay Plant", "BT Tower"). Node IDs are shown alongside their real names.
-Prioritise named hospitals above all other nodes.
+PRIORITY: hospitals (HOSP_*/EMERG_*) > backbone GEN>TRANS>DIST > leaves; favor nodes unblocking downstream.
 
-## Network Rules
+RULES:
+- recover only when ALL upstream are operational; else isolate failed upstream first.
+- harden (2.0) high-centrality nodes BEFORE storms; conserve budget for recoveries.
+- NEVER wait during active failures (cascade debt + penalty).
+- telecom maintains observation confidence; protect it.
+- shed_load only on non-critical, non-hospital, load>0.5.
 
-**Dependency order is mandatory:**
-- You CANNOT recover a node until ALL its upstream suppliers are operational.
-- Example: Worli Water Treatment Plant depends on Dadar Distribution Centre. Recover power FIRST.
-- Wrong order = wasted action + penalty.
+ACTIONS (cost):
+harden 2.0 | recover | isolate | shed_load | coordinate (clear delay) | reroute(A,B) 0.6 | prioritize | deploy_repair_crew 1.2 | emergency_shutdown 0.2 (h<30%) | cross_sector_bridge(SA,SB) 1.5 | patch_scada 0.8 | redistribute_load(A,B) 0.5 | request_mutual_aid(SECTOR) 2.5 once | controlled_cascade | multi_sector_lockdown 2.0 (last resort) | wait (only if nothing actionable).
 
-**Priority hierarchy:**
-1. Hospital nodes (HOSP_*, EMERG_*) — protect at all costs (real patients depend on them)
-2. High-centrality backbone nodes (GEN > TRANS > DIST > leaf nodes)
-3. Nodes that unlock multiple failed downstream dependents
-
-**Geo / Radius Coverage:**
-- Each node has a service radius. If a power plant (50km radius) is operational,
-  it partially protects hospitals within that radius against cascade damage.
-- Keeping telecom towers operational maintains observation confidence.
-  Without telecom coverage, node health readings become noisy.
-
-**Actions available:**
-- harden(NODE_ID): costs 2.0 budget. Reduces failure threshold. Do BEFORE storm events.
-- recover(NODE_ID): restores a failed node. Only works if upstream is operational.
-- isolate(NODE_ID): temporarily stops a failed node from damaging downstream dependents.
-- shed_load(NODE_ID): reduces load on NON-critical nodes only. Only valid when load > 0.5.
-- coordinate(NODE_ID): clears observation delay. Use when confidence is low.
-- wait(null): ONLY valid when there is genuinely nothing actionable.
-  WARNING: Waiting during active failures escalates cascade debt and triggers extra penalties.
-- reroute(SOURCE,TARGET): redirects healthy supply from SOURCE to TARGET (0.6 budget).
-- prioritize(NODE_ID): +0.15 health + 1-step stress immunity; cooldown 3 steps.
-- deploy_repair_crew(NODE_ID): halve repair time on a node already in recovery (1.2 budget).
-- emergency_shutdown(NODE_ID): controlled shutdown when health < 30% (0.2 budget).
-  Tier 3 hint: use when a dying node would cascade; beats letting it fail uncontrolled.
-- cross_sector_bridge(SECTOR_A,SECTOR_B): 3-step cross-sector redundancy link (1.5 budget).
-  Tier 3 hint: bridge telecom\u2192hospital during hospital crisis to restore observability.
-- patch_scada(NODE_ID): stops active SCADA anomaly drain (0.8 budget).
-  Tier 3 hint: use immediately in task_cyberattack once SCADA drain starts; every step of delay compounds.
-- redistribute_load(NODE_A,NODE_B): moves 0.2 load from overloaded to underloaded same-sector node (0.5 budget).
-  Tier 3 hint: use before a node hits 0.9 load to prevent overload cascade.
-- request_mutual_aid(SECTOR): +0.2 health to all nodes in sector; ONCE per episode (2.5 budget).
-  Tier 3 hint: emergency reserve \u2014 only when a full sector is in unrecoverable freefall.
-- controlled_cascade(NODE_ID): sacrifice node takes -0.5 health; neighbors gain +0.15 (0 budget, grader penalty).
-  Tier 4 hint: pick the node with the fewest downstream dependents and lowest centrality.
-- multi_sector_lockdown(null): freeze entire system 2 steps \u2014 no cascade, no recovery (2.0 budget).
-  Tier 4 hint: last resort when simultaneous multi-sector failure is spiraling out of control.
-
-**Budget management:**
-- Do NOT exhaust budget early on low-impact actions.
-- Harden high-centrality nodes BEFORE a storm arrives.
-- Save budget for recoveries after fault events.
-
-## Response Format
-
-You MUST respond in EXACTLY this format (two parts, nothing else):
-<think>
-1. Current phase: [narrative phase]
-2. Critical failures: [list failed nodes]
-3. Upstream dependencies for each failed: [trace chain]
-4. Hospital status: [health values]
-5. At-risk nodes: [from diagnostics]
-6. Budget: [remaining] \u2014 what can I afford?
-7. Radius coverage: [which nodes provide backup]
-8. Best action: [reason why this is optimal vs waiting]
-</think>
+FORMAT (nothing else):
+<think>phase | failures | upstream | hospitals | budget | action + why</think>
 <action>ACTION_TYPE(TARGET_NODE_OR_null)</action>
-
-Examples:
-<action>recover(POWER_GEN_1)</action>
-<action>isolate(POWER_GEN_1)</action>
-<action>harden(POWER_TRANS_1)</action>
-<action>coordinate(WATER_PUMP_1)</action>
-<action>shed_load(POWER_DIST_2)</action>
-<action>reroute(POWER_GEN_2,HOSP_MAIN)</action>
-<action>prioritize(HOSP_MAIN)</action>
-<action>deploy_repair_crew(POWER_GEN_1)</action>
-<action>emergency_shutdown(WATER_TREAT_2)</action>
-<action>cross_sector_bridge(telecom,hospital)</action>
-<action>patch_scada(POWER_GEN_1)</action>
-<action>redistribute_load(POWER_DIST_1,POWER_DIST_2)</action>
-<action>request_mutual_aid(power)</action>
-<action>controlled_cascade(POWER_LEAF_1)</action>
-<action>multi_sector_lockdown(null)</action>
-<action>wait(null)</action>
 """
 
 # Strict JSON format for GRPO training (better for small models)

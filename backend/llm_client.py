@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 import sys
+import threading
 import types
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,6 +23,15 @@ from training.cot_prompt import build_system_prompt, build_user_prompt  # noqa: 
 # Fields that build_user_prompt iterates over with .items() — must stay dicts.
 _DICT_FIELDS_OBS = {"sector_summary"}
 
+# Model loading state machine — exposed via /api/health and used by agent-step
+# to return a 503 cleanly when the model is still loading at startup.
+LOAD_STATE_IDLE = "idle"
+LOAD_STATE_LOADING = "loading"
+LOAD_STATE_READY = "ready"
+LOAD_STATE_ERROR = "error"
+
+logger = logging.getLogger("cascadeguard.llm")
+
 
 class LlmClient:
     def __init__(
@@ -34,6 +45,13 @@ class LlmClient:
         self._model = None
         self._tokenizer = None
         self._loaded_source: Optional[str] = None
+        self._load_state: str = LOAD_STATE_IDLE
+        self._load_error: Optional[str] = None
+        self._load_lock = threading.Lock()
+
+    # ------------------------------------------------------------------
+    # Model loading
+    # ------------------------------------------------------------------
 
     def _resolve_model_source(self) -> str:
         local_path = Path(self.model_path)
@@ -42,31 +60,75 @@ class LlmClient:
         return self.model_name
 
     def load_model(self) -> str:
-        if self._model is not None and self._tokenizer is not None:
-            return self._loaded_source or self._resolve_model_source()
+        """Synchronously load tokenizer + model. Idempotent."""
+        with self._load_lock:
+            if self._model is not None and self._tokenizer is not None:
+                self._load_state = LOAD_STATE_READY
+                return self._loaded_source or self._resolve_model_source()
+            self._load_state = LOAD_STATE_LOADING
+            self._load_error = None
 
-        source = self._resolve_model_source()
-        dtype = torch.float16 if self.device == "cuda" else torch.float32
-        tokenizer = AutoTokenizer.from_pretrained(source, trust_remote_code=True)
-        model = AutoModelForCausalLM.from_pretrained(
-            source,
-            torch_dtype=dtype,
-            low_cpu_mem_usage=True,
-            trust_remote_code=True,
-        )
-        model.to(self.device)
-        model.eval()
+        try:
+            source = self._resolve_model_source()
+            dtype = torch.float16 if self.device == "cuda" else torch.float32
+            tokenizer = AutoTokenizer.from_pretrained(source, trust_remote_code=True)
+            model = AutoModelForCausalLM.from_pretrained(
+                source,
+                torch_dtype=dtype,
+                low_cpu_mem_usage=True,
+                trust_remote_code=True,
+            )
+            model.to(self.device)
+            model.eval()
 
-        if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
-            tokenizer.pad_token = tokenizer.eos_token
+            if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
+                tokenizer.pad_token = tokenizer.eos_token
 
-        self._tokenizer = tokenizer
-        self._model = model
-        self._loaded_source = source
-        return source
+            with self._load_lock:
+                self._tokenizer = tokenizer
+                self._model = model
+                self._loaded_source = source
+                self._load_state = LOAD_STATE_READY
+            logger.info("Model loaded from %s on %s", source, self.device)
+            return source
+        except Exception as exc:  # noqa: BLE001
+            with self._load_lock:
+                self._load_state = LOAD_STATE_ERROR
+                self._load_error = str(exc)
+            logger.exception("Model load failed")
+            raise
+
+    def load_model_async(self) -> None:
+        """Kick off load in a daemon thread so the FastAPI startup doesn't block."""
+        with self._load_lock:
+            if self._load_state in (LOAD_STATE_LOADING, LOAD_STATE_READY):
+                return
+            self._load_state = LOAD_STATE_LOADING
+            self._load_error = None
+
+        def _runner() -> None:
+            try:
+                self.load_model()
+            except Exception:  # noqa: BLE001
+                # load_model already records the error state.
+                pass
+
+        threading.Thread(target=_runner, name="llm-loader", daemon=True).start()
 
     def is_loaded(self) -> bool:
         return self._model is not None and self._tokenizer is not None
+
+    @property
+    def load_state(self) -> str:
+        return self._load_state
+
+    @property
+    def load_error(self) -> Optional[str]:
+        return self._load_error
+
+    # ------------------------------------------------------------------
+    # Inference
+    # ------------------------------------------------------------------
 
     async def get_action(self, raw_observation: Dict[str, Any]) -> Dict[str, Any]:
         if not self.is_loaded():
@@ -78,12 +140,22 @@ class LlmClient:
             {"role": "user", "content": build_user_prompt(obs)},
         ]
         content = await asyncio.to_thread(self._generate_response, messages)
+        # Truncate to keep log lines compact while preserving the full <action> tag.
+        logger.info("Raw model output: %s", content[:200].replace("\n", " | "))
         thinking = _extract_tag(content, "think")
-        action_type, target = _parse_action(content)
+        action_type, target, parameters = _parse_action(content)
+        logger.info(
+            "Parsed action: type=%s target=%s parameters=%s",
+            action_type,
+            target,
+            parameters,
+        )
         return {
             "action": action_type,
             "target": target,
+            "parameters": parameters,
             "thinking": thinking,
+            "raw_output": content,
         }
 
     def _generate_response(self, messages: list[dict[str, str]]) -> str:
@@ -105,8 +177,15 @@ class LlmClient:
         with torch.inference_mode():
             generated_ids = self._model.generate(
                 **encoded,
-                max_new_tokens=512,
+                # The output contract is <think>…</think><action>…</action>.
+                # 60 tokens was too tight: the 0.5B model spent everything on
+                # <think>, ran out of budget mid-tag, and never emitted
+                # <action>. The parser then fell through to wait/None which
+                # the UI rendered as MONITOR every step. 220 tokens reliably
+                # covers a brief reasoning summary + the action tag.
+                max_new_tokens=220,
                 do_sample=False,
+                use_cache=True,
                 pad_token_id=self._tokenizer.pad_token_id,
                 eos_token_id=self._tokenizer.eos_token_id,
             )
@@ -157,18 +236,63 @@ def _build_observation(raw_observation: Dict[str, Any]) -> SimpleNamespace:
 
 
 def _extract_tag(content: str, tag: str) -> str:
+    """Extract <tag>…</tag> content. Falls back to an unclosed <tag>… block
+    so a CoT block that exceeds max_new_tokens still appears in the UI."""
     match = re.search(rf"<{tag}>\s*(.*?)\s*</{tag}>", content, re.IGNORECASE | re.DOTALL)
-    return match.group(1).strip() if match else ""
+    if match:
+        return match.group(1).strip()
+    open_match = re.search(rf"<{tag}>\s*(.*)", content, re.IGNORECASE | re.DOTALL)
+    if open_match:
+        chunk = open_match.group(1).strip()
+        # Stop at the next opening tag if any (e.g. <action>...).
+        next_tag = re.search(r"<\w+>", chunk)
+        if next_tag:
+            chunk = chunk[: next_tag.start()].strip()
+        return chunk
+    return ""
 
 
-def _parse_action(content: str) -> tuple[str, Optional[str]]:
+# Multi-target action helpers — keep aligned with backend/main.py and
+# server/cascade_environment.py so the env never receives a malformed action.
+_TWO_NODE_ACTIONS = {"reroute", "redistribute_load"}
+_TWO_SECTOR_ACTIONS = {"cross_sector_bridge"}
+_SECTOR_ACTIONS = {"request_mutual_aid"}
+
+
+def _parse_action(content: str) -> tuple[str, Optional[str], Dict[str, Any]]:
+    """Extract (action_type, primary_target, parameters) from an LLM response.
+
+    Falls back to wait/null on any parse failure so a malformed model output
+    can never crash the step loop.
+    """
     match = re.search(r"<action>\s*([a-zA-Z_]+)\(([^)]*)\)\s*</action>", content, re.IGNORECASE)
     if not match:
-        return "wait", None
+        return "wait", None, {}
 
     action_type = match.group(1).lower()
-    raw_target = match.group(2).strip()
-    if not raw_target or raw_target.lower() in {"null", "none"}:
-        return action_type, None
-    first_target = raw_target.split(",")[0].strip()
-    return action_type, first_target or None
+    raw_args = match.group(2).strip()
+
+    if not raw_args or raw_args.lower() in {"null", "none"}:
+        return action_type, None, {}
+
+    parts = [p.strip() for p in raw_args.split(",") if p.strip()]
+    if not parts:
+        return action_type, None, {}
+
+    parameters: Dict[str, Any] = {}
+    primary: Optional[str] = parts[0] if parts[0].lower() not in {"null", "none"} else None
+
+    if action_type in _TWO_NODE_ACTIONS and len(parts) >= 2:
+        if action_type == "reroute":
+            parameters = {"source": parts[0], "target": parts[1]}
+        else:  # redistribute_load
+            parameters = {"node_a": parts[0], "node_b": parts[1]}
+        primary = parts[0]
+    elif action_type in _TWO_SECTOR_ACTIONS and len(parts) >= 2:
+        parameters = {"sector_a": parts[0], "sector_b": parts[1]}
+        primary = parts[0]
+    elif action_type in _SECTOR_ACTIONS:
+        parameters = {"sector": parts[0]}
+        primary = parts[0]
+
+    return action_type, primary, parameters
