@@ -1,4 +1,10 @@
 from __future__ import annotations
+import sys
+import os
+
+ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, ROOT_DIR)
+
 
 import asyncio
 import copy
@@ -15,9 +21,9 @@ from functools import lru_cache
 from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
-from .client import CascadeGuardEnv
-from .models import CascadeAction
-from .tasks import TASK_CONFIGS, TASK_SEED_SPLITS
+from client import CascadeGuardEnv
+from models import CascadeAction
+from tasks import TASK_CONFIGS, TASK_SEED_SPLITS
 
 # Local planner disabled to avoid local/server behavior drift during evaluation.
 LocalCascadeEnvironment = None
