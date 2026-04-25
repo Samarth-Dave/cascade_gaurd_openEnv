@@ -690,6 +690,183 @@ even when no single step provides differentiation.
 
 ---
 
+## Problem 9 — Parser silent fallback masquerading as mode collapse (the deepest bug)
+
+> Andy Jones: "Loss curves are a red herring." — but so is any diagnostic
+> that uses a function with silent fallback semantics.
+
+### Observation
+After Problem 8's fixes were shipped (SFT corpus rebalanced to 0% wait,
+SFT_STEPS reduced, GRPO sampling at temp=1.4/top_p=0.98/top_k=0), Cell B
+*still* reported:
+
+```text
+row[0] task=task_cyberattack  unique=1/6  parseable=6/6
+    gen[0..5] -> wait(None)   ×6
+mean unique-action ratio : 0.17
+full-collapse rows       : 8/8
+```
+
+100% collapse to `wait(None)` despite the corpus having literally zero
+`wait` rows after rebalance. This is impossible if you take the diagnostic
+at face value — the model can't have "learned" something it never saw.
+
+### Diagnosis
+Reading `training/cot_prompt.py::parse_action_from_response` carefully:
+
+```python
+# 3. Fallback: plain function-call anywhere in response
+if not match:
+    loose_pattern = (...)
+    match = re.search(loose_pattern, response, re.IGNORECASE)
+
+if not match:
+    return CascadeAction(action_type="wait", target_node_id=None)  # ⚠️ SILENT FALLBACK
+
+action_type = match.group(1).lower()
+...
+if action_type not in VALID_ACTIONS:
+    return CascadeAction(action_type="wait", target_node_id=None)  # ⚠️ SILENT FALLBACK
+```
+
+**The parser silently returns `wait(None)` for any unparseable response.**
+This is the textbook "silent failure" anti-pattern Andy Jones warns about.
+Every diagnostic downstream is poisoned:
+
+1. **Cell B**: `parse_action_from_response` never raises → the try/except
+   counts every completion as `parseable=1` even when the parser fell back.
+   The `wait(None)` you see in the log isn't the model's output — it's the
+   parser's apology for not finding an action.
+
+2. **`cascade_grpo_reward`**: Same parse → same silent fallback. The reward
+   function applies `-1.65` for unparseable AND `-0.55 to -0.85` for "wait
+   during crisis" AND `-0.40 to -0.75` group-collapse penalty… all uniformly
+   across the group. Within-group reward σ ≈ 0 not because of mode collapse
+   but because every completion gets the same constants.
+
+3. **Score-delta**: Both agent and teacher step the env with `wait` (one
+   from the parser fallback, one from the recorded teacher action). If the
+   teacher action also happened to be `wait`, `score_delta = 0` exactly.
+
+The "agent only outputs wait" diagnosis was a false trail produced by
+trusting a function with silent error handling.
+
+### What the model is actually doing
+Inspecting raw completions (the new printout in fixed Cell B) typically
+reveals one of three patterns:
+
+1. **Chat fluff**: `"I'll wait and observe the situation before acting."`
+   → no `<action>` tag, parser returns wait. **Fix**: more SFT or simpler
+   completion format.
+2. **Thought-only**: `"<think>The cascade depth is 1, I should consider..."`
+   → completion ran out of tokens before emitting `</think>` or `<action>`.
+   **Fix**: raise `MAX_COMP_LEN` from 200 → 400.
+3. **Empty/very short**: `""` or `"\n\n"` → generation_config has a
+   `min_length` conflict or `pad_token_id` is mishandled. **Fix**: explicit
+   `min_new_tokens` in generate kwargs.
+
+### Fix
+Three coordinated changes — all cosmetic in code size, fundamental in
+diagnostic value.
+
+#### 9a. Cell B: import `_looks_parseable_action`, check it BEFORE parsing
+```python
+# In notebook cell 29
+_looks_parseable_b = getattr(train_grpo, '_looks_parseable_action', None)
+...
+for _t in _texts:
+    if _looks_parseable_b(_t):
+        _act = parse_action_from_response(_t, None)
+        _action_keys.append(f"{_act.action_type}({_act.target_node_id})")
+        _parseable_n += 1
+    else:
+        _action_keys.append("__UNPARSEABLE__")  # do NOT launder through parser
+        _unparseable_n += 1
+```
+
+This makes Cell B truthful: `"__UNPARSEABLE__"` shows up explicitly when the
+model's output has no action tag, instead of being silently rewritten as
+`wait(None)`.
+
+#### 9b. Cell B: print raw completion text on unparseable rows
+```python
+if _unparseable_n > 0 and _i < 2:
+    print("      ── raw completions (first 250 chars) ──")
+    for _j, _t in enumerate(_texts[:3]):
+        _snippet = _t.replace('\n', ' ')[:250]
+        print(f"      raw[{_j}]: {_snippet!r}")
+```
+
+This is the single most diagnostic piece of info. Without it, you cannot
+distinguish "model is producing chat fluff" from "model is producing empty
+text" from "model is producing partial actions" — three completely
+different fixes.
+
+#### 9c. Cell B: distinct hard-fail messages for the two failure modes
+```python
+_format_broken    = _unparse_rate >= 0.5
+_extreme_collapse = (not _format_broken
+                     and (_full_collapse_rate >= 0.5
+                          or _mean_unique_ratio < 0.20))
+
+if _format_broken:
+    raise RuntimeError("Cell B hard-fail: model not producing valid actions ...")
+if _extreme_collapse:
+    raise RuntimeError("Cell B hard-fail: extreme mode collapse ...")
+```
+
+Failure mode A (model not producing actions) and failure mode B (model
+collapsed to one action) require completely different fixes:
+- A → more SFT, simpler format, bigger model. GRPO cannot help.
+- B → more sampling diversity, less SFT, corpus rebalance. GRPO can help.
+
+The old "extreme mode collapse" message would falsely diagnose A as B and
+recommend reducing SFT_STEPS, which is the *opposite* of the right fix.
+
+#### 9d. `cascade_grpo_reward`: track `unparseable_count` separately
+```python
+# In training/train_grpo.py
+unparseable_count = 0
+...
+if not parseable:
+    unparseable_count += 1
+    action_log.append("__UNPARSEABLE__")  # don't pollute action_log with fallback
+else:
+    action_log.append(f"{agent_action.action_type}({agent_action.target_node_id})")
+```
+
+Telemetry log line now includes `unparseable=K/N`. New WARNING text
+distinguishes "all unparseable" (model didn't learn format) from "all
+collapsed to one parseable action" (true mode collapse) — they need
+different fixes.
+
+### Manual verification
+1. Cell B output must include the `unparseable=` column per row AND
+   `unparseable rate` line in the summary. If the unparseable rate is
+   `>= 50%`, Cell B will hard-fail with the **new** message that says
+   "model is NOT producing valid actions" — NOT the old "mode collapse"
+   message.
+2. When unparseable rate > 0, Cell B must print `── raw completions` blocks
+   showing the actual model text. If you don't see these blocks, the fix
+   isn't deployed.
+3. During GRPO training, `GRPO[N]` lines now show `unparseable=K/N`. If
+   `K = N` repeatedly, the `UNPARSEABLE GROUP` warning explicitly tells you
+   GRPO cannot fix this — fix the format upstream.
+
+### When this fixes vs reveals the underlying issue
+This change does NOT fix the root cause — the model is still producing
+unparseable text. It exposes the lie hiding underneath the symptom. The
+correct response after deploying 9a–9d is:
+
+| What raw completions look like | Real fix |
+|---|---|
+| `"I'll wait and see..."` (chat fluff) | SFT_STEPS = 250-300 (more), verify SFT corpus actually has `<action>X(Y)</action>` in completion column |
+| Truncated mid-`<think>` | `MAX_COMP_LEN = 400` (was 200) |
+| Empty / single newline | Set `min_new_tokens=20` in generate kwargs; check pad_token_id |
+| `<action>foo(BAR)</action>` but `foo` not in VALID_ACTIONS | SFT corpus has invalid action types; clean it |
+
+---
+
 ## Open items (not yet implemented — only if needed)
 
 If the above fixes still leave loss flat after a clean run:

@@ -1503,6 +1503,12 @@ def make_grpo_reward_fn(CascadeEnvironment, CascadeAction, parse_action_from_res
         step_delta_log: List[float] = []
         explore_bonus_count = 0
         wait_during_crisis_count = 0
+        # Track unparseable completions separately from "model emitted wait".
+        # parse_action_from_response silently returns wait(None) on missing
+        # action — without this counter the telemetry can't tell whether a
+        # group of `wait(None)` actions came from the model or from the
+        # parser fallback (the actual root cause of most "mode collapse").
+        unparseable_count = 0
         n = len(completions)
         task_ids = _ensure_list(task_id, n, "task_easy")
         seeds = _ensure_list(seed, n, 42)
@@ -1557,7 +1563,14 @@ def make_grpo_reward_fn(CascadeEnvironment, CascadeAction, parse_action_from_res
             )
 
             agent_action = parse_action_from_response(text, agent_obs)
-            action_log.append(f"{agent_action.action_type}({agent_action.target_node_id})")
+            # Tag unparseable completions in the action_log so group-collapse
+            # detection below distinguishes "all 6 emitted real wait()" from
+            # "all 6 emitted garbage that fell through to parser default".
+            if not parseable:
+                unparseable_count += 1
+                action_log.append("__UNPARSEABLE__")
+            else:
+                action_log.append(f"{agent_action.action_type}({agent_action.target_node_id})")
             agent_legal = agent_env.get_legal_actions() if hasattr(agent_env, "get_legal_actions") else []
             teacher_legal = teacher_env.get_legal_actions() if hasattr(teacher_env, "get_legal_actions") else []
             teacher_action = _select_teacher_action(
@@ -1776,12 +1789,14 @@ def make_grpo_reward_fn(CascadeEnvironment, CascadeAction, parse_action_from_res
             step_delta_max = max(step_delta_log) if step_delta_log else 0.0
             log.info(
                 "GRPO[%d] n=%d  reward mu=%.3f sd=%.3f  unique_act=%d/%d  "
-                "teacher_match=%d/%d  explore=%d/%d  wait_crisis=%d/%d  "
-                "collapse_pen=%s  score_d=[%.4f,%.4f] step_d=[%.3f,%.3f]",
+                "unparseable=%d/%d  teacher_match=%d/%d  explore=%d/%d  "
+                "wait_crisis=%d/%d  collapse_pen=%s  "
+                "score_d=[%.4f,%.4f] step_d=[%.3f,%.3f]",
                 reward_call_count,
                 len(rewards),
                 raw_mu, raw_sd,
                 unique_actions, len(rewards),
+                unparseable_count, len(rewards),
                 teacher_match, len(rewards),
                 explore_bonus_count, len(rewards),
                 wait_during_crisis_count, len(rewards),
@@ -1789,7 +1804,19 @@ def make_grpo_reward_fn(CascadeEnvironment, CascadeAction, parse_action_from_res
                 score_delta_min, score_delta_max,
                 step_delta_min, step_delta_max,
             )
-            if group_collapse_penalty_applied:
+            # Distinct warnings for "all unparseable" vs "all collapsed to
+            # one parseable action" — they require different fixes.
+            if unparseable_count == len(rewards) and len(rewards) > 1:
+                log.warning(
+                    "  UNPARSEABLE GROUP: all %d completions lacked an "
+                    "<action>...</action> tag or JSON action. The model is "
+                    "NOT emitting valid actions — earlier 'collapse to wait' "
+                    "is the parser fallback laundering garbage. Fix: more SFT "
+                    "(raise SFT_STEPS), simpler completion format, or larger "
+                    "base model. GRPO cannot fix this — it has no signal.",
+                    len(rewards),
+                )
+            elif group_collapse_penalty_applied:
                 log.warning(
                     "  GROUP COLLAPSE: all %d completions parsed to '%s' — "
                     "uniform penalty applied to push policy gradient away from "
