@@ -9,7 +9,7 @@ INSTALLATION (Windows — Anaconda Prompt or PowerShell):
   # Then install the project deps:
   conda activate unsloth_env   (or whatever env Unsloth made)
   pip install "trl>=0.24.0" "datasets>=4.2" "peft>=0.14" "accelerate>=1.10" pandas matplotlib "fastapi>=0.115" "uvicorn>=0.30" "pydantic>=2.0" "openenv-core[core]>=0.2.2" mergekit
-  cd "C:\\Users\\Samarth Dave\\Desktop\\metaV1\\cascade_guard"
+    cd "C:\\path\\to\\repo"
   pip install -e .
 
 INSTALLATION (Linux / WSL / macOS):
@@ -258,21 +258,19 @@ def parse_args() -> argparse.Namespace:
 def find_project_root(hint: str = "") -> Path:
     """
     Walk up from CWD (or use hint) to find the repo root that contains
-    cascade_guard/server/cascade_environment.py.
+    server/cascade_environment.py.
     """
     if hint:
         candidate = Path(hint).expanduser().resolve()
-        if (candidate / "cascade_guard" / "server" / "cascade_environment.py").exists():
-            return candidate
         if (candidate / "server" / "cascade_environment.py").exists():
-            return candidate.parent
+            return candidate
         raise RuntimeError(
             f"CASCADEGUARD_REPO '{hint}' does not look like the repo root.\n"
-            "Expected to find:  cascade_guard/server/cascade_environment.py"
+            "Expected to find:  server/cascade_environment.py"
         )
     here = Path.cwd().resolve()
     for candidate in [here, *here.parents]:
-        if (candidate / "cascade_guard" / "server" / "cascade_environment.py").exists():
+        if (candidate / "server" / "cascade_environment.py").exists():
             return candidate
     raise RuntimeError(
         "Cannot find the cascade_gaurd_openEnv repo.\n"
@@ -288,15 +286,15 @@ def find_project_root(hint: str = "") -> Path:
 # ══════════════════════════════════════════════════════════════════════════
 
 def import_cascade(project_root: Path):
-    """Insert the repo on sys.path then import all cascade_guard symbols."""
+    """Insert the repo on sys.path then import all project symbols."""
     repo_str = str(project_root)
     if repo_str not in sys.path:
         sys.path.insert(0, repo_str)
 
-    from cascade_guard.models import CascadeAction
-    from cascade_guard.server.cascade_environment import CascadeEnvironment
-    from cascade_guard.tasks import TASK_CONFIGS, TASK_SEED_SPLITS
-    from cascade_guard.training.cot_prompt import (
+    from models import CascadeAction
+    from server.cascade_environment import CascadeEnvironment
+    from tasks import TASK_CONFIGS, TASK_SEED_SPLITS
+    from training.cot_prompt import (
         build_system_prompt,
         build_user_prompt,
         make_training_prompt,
@@ -1264,7 +1262,7 @@ def collect_training_states(
 def make_grpo_reward_fn(CascadeEnvironment, CascadeAction, parse_action_from_response, args: Optional[argparse.Namespace] = None):
     """
     Returns a reward function compatible with TRL GRPOTrainer.
-    Closed over the cascade_guard symbols so it can be passed directly.
+    Closed over project symbols so it can be passed directly.
     """
     heuristic_teacher = make_heuristic_policy(CascadeAction)
     teacher_policies = make_training_sub_policies(CascadeAction, heuristic_teacher)
@@ -2090,7 +2088,7 @@ def main():
     log.info("Project root: %s", project_root)
     os.chdir(project_root)
 
-    # ── Import cascade_guard symbols ───────────────────────────────────
+    # ── Import project symbols ─────────────────────────────────────────
     (
         CascadeAction, CascadeEnvironment, TASK_CONFIGS,
         TASK_SEED_SPLITS, build_system_prompt, build_user_prompt,
@@ -2098,7 +2096,7 @@ def main():
         parse_action_from_response,
     ) = import_cascade(project_root)
 
-    log.info("cascade_guard imported OK.")
+    log.info("Project modules imported OK.")
 
     # ── Environment sanity check ───────────────────────────────────────
     run_env_sanity_check(

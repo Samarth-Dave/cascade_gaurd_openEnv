@@ -1,4 +1,4 @@
-from cascade_guard.tasks import TASK_CONFIGS
+from tasks import TASK_CONFIGS
 
 osm = [t for t in TASK_CONFIGS if t.startswith("task_osm")]
 base = [t for t in TASK_CONFIGS if not t.startswith("task_osm")]
@@ -20,11 +20,11 @@ for t in osm:
 
 print()
 print("reward.py import check:", end=" ")
-from cascade_guard.reward import compute_reward, grpo_verifier
+from reward import compute_reward, grpo_verifier
 print("OK")
 
 print("adversarial_attacker import check:", end=" ")
-from cascade_guard.adversarial_attacker import make_attacker
+from adversarial_attacker import make_attacker
 a = make_attacker("betweenness")
 print(f"OK ({type(a).__name__})")
 

@@ -17,7 +17,7 @@ This transforms CascadeGuard into a two-player zero-sum game:
 This directly unlocks OpenEnv Theme 1 (Multi-Agent) and the Fleet AI sub-theme.
 
 Usage:
-    from cascade_guard.adversarial_attacker import make_attacker
+    from adversarial_attacker import make_attacker
 
     attacker = make_attacker("centrality", attack_strength=0.12, attack_every=3)
     obs = env.reset(task_id="task_hard", seed=seed)

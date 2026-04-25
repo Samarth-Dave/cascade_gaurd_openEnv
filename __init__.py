@@ -6,8 +6,8 @@
 
 """Cascade Guard Environment."""
 
-from .client import CascadeGuardEnv
-from .models import CascadeGuardAction, CascadeGuardObservation
+from client import CascadeGuardEnv
+from models import CascadeGuardAction, CascadeGuardObservation
 
 __all__ = [
     "CascadeGuardAction",

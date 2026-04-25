@@ -5,7 +5,7 @@ Extracted from CascadeEnvironment so training scripts and external
 evaluators can import the reward logic without instantiating the full env.
 
 Usage:
-    from cascade_guard.reward import compute_reward, grpo_verifier
+    from reward import compute_reward, grpo_verifier
 """
 from __future__ import annotations
 

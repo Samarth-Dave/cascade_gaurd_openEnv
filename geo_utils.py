@@ -13,7 +13,7 @@ Key concepts:
   - Coverage quality degrades with distance: quality = 1 - (dist / radius)
 
 Usage:
-    from cascade_guard.geo_utils import (
+    from geo_utils import (
         haversine, compute_coverage_matrix,
         compute_cascade_mitigation, compute_obs_confidence
     )

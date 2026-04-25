@@ -5,7 +5,7 @@ Renders step-by-step environment state in a readable, judge-friendly
 format using only built-in terminal characters (no external deps).
 
 Usage:
-    from cascade_guard.cli_display import render_step, render_episode_start, render_episode_end
+    from cli_display import render_step, render_episode_start, render_episode_end
 
     render_episode_start(task_id, seed)
     for each step:

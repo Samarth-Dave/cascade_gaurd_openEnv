@@ -12,8 +12,8 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from openenv.core.env_server import create_app
 
-from cascade_guard.server.cascade_environment import CascadeEnvironment
-from cascade_guard.models import CascadeAction, CascadeObservation
+from server.cascade_environment import CascadeEnvironment
+from models import CascadeAction, CascadeObservation
 
 app = create_app(CascadeEnvironment, CascadeAction, CascadeObservation)
 
@@ -23,7 +23,7 @@ app = create_app(CascadeEnvironment, CascadeAction, CascadeObservation)
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "env": "cascade_guard", "version": "0.4.0"}
+    return {"status": "ok", "env": "cascade", "version": "0.4.0"}
 
 
 # ---------------------------------------------------------------------------
@@ -114,7 +114,7 @@ async def get_tasks():
     Returns all registered task IDs with their descriptions and metadata.
     Includes dynamically loaded OSM city tasks.
     """
-    from cascade_guard.tasks import TASK_CONFIGS
+    from tasks import TASK_CONFIGS
     return {
         tid: {
             "description": cfg.get("description", ""),

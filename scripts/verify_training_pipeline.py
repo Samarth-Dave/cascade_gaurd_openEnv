@@ -16,7 +16,7 @@ def check(name, fn):
 
 # 1. real_name flows from tasks.py -> env -> NodeStatus
 def test_real_name_pipeline():
-    from cascade_guard.server.cascade_environment import CascadeEnvironment
+    from server.cascade_environment import CascadeEnvironment
     env = CascadeEnvironment()
     obs = env.reset(task_id="task_hard", seed=42)
     names = {n.node_id: n.real_name for n in obs.nodes}
@@ -28,7 +28,7 @@ check("real_name in task_hard (HOSP_1)", test_real_name_pipeline)
 
 # 2. OSM tasks have real_name in observations
 def test_osm_real_name():
-    from cascade_guard.server.cascade_environment import CascadeEnvironment
+    from server.cascade_environment import CascadeEnvironment
     env = CascadeEnvironment()
     obs = env.reset(task_id="task_osm_london", seed=42)
     names = {n.node_id: n.real_name for n in obs.nodes}
@@ -40,8 +40,8 @@ check("real_name in task_osm_london", test_osm_real_name)
 
 # 3. Prompt builder shows real_name column
 def test_prompt_real_name():
-    from cascade_guard.server.cascade_environment import CascadeEnvironment
-    from cascade_guard.training.cot_prompt import build_user_prompt
+    from server.cascade_environment import CascadeEnvironment
+    from training.cot_prompt import build_user_prompt
     env = CascadeEnvironment()
     obs = env.reset(task_id="task_osm_mumbai", seed=42)
     prompt = build_user_prompt(obs)
@@ -56,7 +56,7 @@ check("real_name in LLM prompt (task_osm_mumbai)", test_prompt_real_name)
 
 # 4. Curriculum loads all 11 stages (5 base + 6 OSM)
 def test_curriculum():
-    from cascade_guard.training.curriculum_scheduler import CurriculumScheduler
+    from training.curriculum_scheduler import CurriculumScheduler
     sched = CurriculumScheduler()
     stages = [s.task_id for s in sched._stages]
     osm = [s for s in stages if s.startswith("task_osm")]
@@ -70,7 +70,7 @@ check("CurriculumScheduler has 11 stages", test_curriculum)
 
 # 5. reward.py grpo_verifier works
 def test_reward():
-    from cascade_guard.reward import grpo_verifier, parse_action_from_completion
+    from reward import grpo_verifier, parse_action_from_completion
     obs = {
         "sector_health": {"power": 0.9, "water": 0.8, "hospital": 1.0, "telecom": 0.7},
         "cascade_depth": 0,
@@ -91,8 +91,8 @@ check("reward.py grpo_verifier + parse_action", test_reward)
 
 # 6. adversarial BetweennessCentralityAttacker + .think()
 def test_attacker():
-    from cascade_guard.adversarial_attacker import make_attacker
-    from cascade_guard.server.cascade_environment import CascadeEnvironment
+    from adversarial_attacker import make_attacker
+    from server.cascade_environment import CascadeEnvironment
     env = CascadeEnvironment()
     obs = env.reset(task_id="task_osm_london", seed=42)
     attacker = make_attacker("betweenness")
@@ -105,8 +105,8 @@ check("BetweennessCentralityAttacker.think()", test_attacker)
 
 # 7. Full step loop on OSM task
 def test_osm_step_loop():
-    from cascade_guard.server.cascade_environment import CascadeEnvironment
-    from cascade_guard.models import CascadeAction
+    from server.cascade_environment import CascadeEnvironment
+    from models import CascadeAction
     env = CascadeEnvironment()
     obs = env.reset(task_id="task_osm_tokyo", seed=42)
     rewards = []

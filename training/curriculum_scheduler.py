@@ -44,7 +44,7 @@ CURRICULUM_STAGES: List[tuple] = [
 # Filter to tasks that are actually registered (OSM tasks need real_nodes.json)
 def _available_stages() -> List[tuple]:
     try:
-        from cascade_guard.tasks import TASK_CONFIGS
+        from tasks import TASK_CONFIGS
         return [(tid, th, me) for tid, th, me in CURRICULUM_STAGES if tid in TASK_CONFIGS]
     except Exception:
         return [(tid, th, me) for tid, th, me in CURRICULUM_STAGES
@@ -155,7 +155,7 @@ class CurriculumScheduler:
 
     def get_seeds(self, split: str = "train") -> List[int]:
         """Return training/validation seeds for the current task."""
-        from cascade_guard.tasks import TASK_SEED_SPLITS
+        from tasks import TASK_SEED_SPLITS
         return TASK_SEED_SPLITS[self.current_task][split]
 
     def summary(self) -> str:

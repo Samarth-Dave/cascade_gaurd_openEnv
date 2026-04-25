@@ -6,6 +6,6 @@
 
 """Cascade Guard environment server components."""
 
-from .cascade_environment import CascadeEnvironment
+from server.cascade_environment import CascadeEnvironment
 
 __all__ = ["CascadeEnvironment"]

@@ -1239,7 +1239,7 @@ class CascadeEnvironment(Environment):
         attack_event format:
             {"type": "equipment_fault", "target": "NODE_ID", "effect": -0.15}
 
-        Passing None is safe (no-op). Use with cascade_guard.adversarial_attacker.
+        Passing None is safe (no-op). Use with adversarial_attacker.
         """
         if attack_event is None:
             return

@@ -4,7 +4,7 @@ from typing import Optional
 
 from openenv.core.env_client import EnvClient, StepResult
 
-from cascade_guard.models import CascadeAction, CascadeObservation, CascadeState
+from models import CascadeAction, CascadeObservation, CascadeState
 
 
 class CascadeGuardEnv(EnvClient):

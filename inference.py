@@ -15,9 +15,9 @@ from functools import lru_cache
 from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
-from cascade_guard.client import CascadeGuardEnv
-from cascade_guard.models import CascadeAction
-from cascade_guard.tasks import TASK_CONFIGS, TASK_SEED_SPLITS
+from client import CascadeGuardEnv
+from models import CascadeAction
+from tasks import TASK_CONFIGS, TASK_SEED_SPLITS
 
 # Local planner disabled to avoid local/server behavior drift during evaluation.
 LocalCascadeEnvironment = None
@@ -1341,7 +1341,7 @@ async def run_task(
     scenario_split: str = "train",
     scenario_index: int = 0,
 ) -> tuple[float, List[float]]:
-    print(f"[START] task={task_id} env=cascade_guard model={MODEL_NAME}", flush=True)
+    print(f"[START] task={task_id} env=cascade model={MODEL_NAME}", flush=True)
 
     planner_env: Optional[Any] = None
     rewards: List[float] = []
@@ -1532,7 +1532,7 @@ async def run_task(
         grade_fn = grade_episode
         if grade_fn is None:
             try:
-                from cascade_guard.server.graders import grade as grade_fn
+                from server.graders import grade as grade_fn
             except Exception as exc:
                 _debug(f"[WARN] grader import failed: {exc}")
                 grade_fn = None

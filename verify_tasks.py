@@ -1,11 +1,11 @@
 import sys
+from pathlib import Path
 
-sys.path.insert(0, "C:/Users/Samarth Dave/Desktop/metaV1/cascade_guard")
-sys.path.insert(0, "C:/Users/Samarth Dave/Desktop/metaV1")
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from cascade_guard.server.cascade_environment import CascadeEnvironment
-from cascade_guard.models import CascadeAction
-from cascade_guard.server.graders import grade
+from server.cascade_environment import CascadeEnvironment
+from models import CascadeAction
+from server.graders import grade
 from inference import _build_user_prompt, SYSTEM_PROMPT, smart_heuristic
 
 for tid in [
