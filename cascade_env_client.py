@@ -7,8 +7,8 @@ action / observation types.
 Usage (async)
 -------------
     import asyncio
-    from cascade_env_client import CascadeEnvClient
-    from models import CascadeAction
+    from cascade_guard.cascade_env_client import CascadeEnvClient
+    from cascade_guard.models import CascadeAction
 
     async def main():
         async with CascadeEnvClient("https://your-space.hf.space") as env:
@@ -20,7 +20,7 @@ Usage (async)
 
 Usage (sync)
 ------------
-    from cascade_env_client import CascadeEnvClient
+    from cascade_guard.cascade_env_client import CascadeEnvClient
 
     client = CascadeEnvClient("http://localhost:8000")
     obs = client.reset_sync(task_id="task_osm_london")

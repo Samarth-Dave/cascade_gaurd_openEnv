@@ -286,20 +286,34 @@ def find_project_root(hint: str = "") -> Path:
 # ══════════════════════════════════════════════════════════════════════════
 
 def import_cascade(project_root: Path):
-    """Insert the repo on sys.path then import all project symbols."""
+    """Import all project symbols with package-first fallback."""
     repo_str = str(project_root)
-    if repo_str not in sys.path:
-        sys.path.insert(0, repo_str)
+    parent_str = str(project_root.parent)
+    if parent_str not in sys.path:
+        sys.path.insert(0, parent_str)
 
-    from models import CascadeAction
-    from server.cascade_environment import CascadeEnvironment
-    from tasks import TASK_CONFIGS, TASK_SEED_SPLITS
-    from training.cot_prompt import (
-        build_system_prompt,
-        build_user_prompt,
-        make_training_prompt,
-        parse_action_from_response,
-    )
+    try:
+        from cascade_guard.models import CascadeAction
+        from cascade_guard.server.cascade_environment import CascadeEnvironment
+        from cascade_guard.tasks import TASK_CONFIGS, TASK_SEED_SPLITS
+        from cascade_guard.training.cot_prompt import (
+            build_system_prompt,
+            build_user_prompt,
+            make_training_prompt,
+            parse_action_from_response,
+        )
+    except ModuleNotFoundError:
+        if repo_str not in sys.path:
+            sys.path.insert(0, repo_str)
+        from models import CascadeAction
+        from server.cascade_environment import CascadeEnvironment
+        from tasks import TASK_CONFIGS, TASK_SEED_SPLITS
+        from training.cot_prompt import (
+            build_system_prompt,
+            build_user_prompt,
+            make_training_prompt,
+            parse_action_from_response,
+        )
     return CascadeAction, CascadeEnvironment, TASK_CONFIGS, TASK_SEED_SPLITS, \
            build_system_prompt, build_user_prompt, make_training_prompt, parse_action_from_response
 

@@ -87,4 +87,4 @@ RUN cd /app/env && \
     echo "OSM fetch failed — fallback coords will be used at runtime"
 
 # Run the FastAPI server
-CMD ["sh", "-c", "cd /app/env && uvicorn server.app:app --host 0.0.0.0 --port 8000"]
+CMD ["sh", "-c", "cd /app/env && python -m uvicorn cascade_guard.server.app:app --host 0.0.0.0 --port 8000"]

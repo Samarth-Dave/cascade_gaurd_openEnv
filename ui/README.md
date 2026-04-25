@@ -27,7 +27,7 @@ http://localhost:8080
 From the repo root:
 
 ```powershell
-python server/app.py
+python -m uvicorn cascade_guard.server.app:app --host 0.0.0.0 --port 8000
 ```
 
 Then launch the frontend and confirm the connection banner switches from simulation to live mode.

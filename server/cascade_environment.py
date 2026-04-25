@@ -9,35 +9,14 @@ from typing import Any, Dict, List, Optional, Set
 
 from openenv.core.env_server import Environment
 
-# AFTER
-try:
-    from ..models import (
-        CascadeAction, CascadeObservation, CascadeState,
-        EdgeStatus, NodeStatus, ObservationDiagnostics,
-    )
-    from ..tasks import TASK_CONFIGS, materialize_task_config, resolve_seed
-except ImportError:
-    from models import (                                         # flat layout
-        CascadeAction, CascadeObservation, CascadeState,
-        EdgeStatus, NodeStatus, ObservationDiagnostics,
-    )
-    from tasks import TASK_CONFIGS, materialize_task_config, resolve_seed
-
-try:
-    from ..geo_utils import (
-        compute_coverage_matrix, compute_cascade_mitigation,
-        compute_obs_confidence, coverage_events_summary, DEFAULT_NODE_COORDS,
-    )
-    GEO_AVAILABLE = True
-except ImportError:
-    try:
-        from geo_utils import (
-            compute_coverage_matrix, compute_cascade_mitigation,
-            compute_obs_confidence, coverage_events_summary, DEFAULT_NODE_COORDS,
-        )
-        GEO_AVAILABLE = True
-    except ImportError:
-        GEO_AVAILABLE = False
+from ..models import (
+    CascadeAction,
+    CascadeObservation,
+    CascadeState,
+    EdgeStatus,
+    NodeStatus,
+    ObservationDiagnostics,
+)
 from ..tasks import TASK_CONFIGS, materialize_task_config, resolve_seed
 from .graders import grade
 try:

@@ -492,7 +492,7 @@ def parse_action_from_response(response: str, obs: Optional["CascadeObservation"
     Parse <action>ACTION_TYPE(TARGET)</action> from LLM response.
     Falls back to JSON format, then plain text, then wait() on any failure.
     """
-    from models import CascadeAction
+    from ..models import CascadeAction
 
     VALID_ACTIONS = {
         "harden", "shed_load", "coordinate", "recover", "isolate", "wait",

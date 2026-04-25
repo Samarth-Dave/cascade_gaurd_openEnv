@@ -1,12 +1,30 @@
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+REPO_ROOT = Path(__file__).resolve().parent
+PACKAGE_PARENT = REPO_ROOT.parent
 
-from server.cascade_environment import CascadeEnvironment
-from models import CascadeAction
-from server.graders import grade
-from inference import _build_user_prompt, SYSTEM_PROMPT, smart_heuristic
+try:
+    from cascade_guard.server.cascade_environment import CascadeEnvironment
+    from cascade_guard.models import CascadeAction
+    from cascade_guard.server.graders import grade
+    from cascade_guard.inference import _build_user_prompt, SYSTEM_PROMPT, smart_heuristic
+except ModuleNotFoundError:
+    if str(PACKAGE_PARENT) not in sys.path:
+        sys.path.insert(0, str(PACKAGE_PARENT))
+    try:
+        from cascade_guard.server.cascade_environment import CascadeEnvironment
+        from cascade_guard.models import CascadeAction
+        from cascade_guard.server.graders import grade
+        from cascade_guard.inference import _build_user_prompt, SYSTEM_PROMPT, smart_heuristic
+    except ModuleNotFoundError:
+        # Legacy repo-root execution fallback.
+        if str(REPO_ROOT) not in sys.path:
+            sys.path.insert(0, str(REPO_ROOT))
+        from server.cascade_environment import CascadeEnvironment
+        from models import CascadeAction
+        from server.graders import grade
+        from inference import _build_user_prompt, SYSTEM_PROMPT, smart_heuristic
 
 for tid in [
     "task_easy",

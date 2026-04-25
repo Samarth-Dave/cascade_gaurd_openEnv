@@ -3,7 +3,7 @@
 ## 1. Install
 
 ```bash
-cd metaV1
+cd metaV1/cascade_guard
 pip install -e .
 pip install openenv-core pydantic fastapi uvicorn
 ```
@@ -20,7 +20,7 @@ pip install unsloth
 ## 2. Start the Environment Server
 
 ```bash
-uvicorn cascade_guard.server.app:app --host 0.0.0.0 --port 8000 --reload
+python -m uvicorn cascade_guard.server.app:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 Expected output:
@@ -81,7 +81,7 @@ This produces `logs/eval_results.csv` and prints a summary table.
 
 ### Minimum viable settings (should produce score > 0.50):
 ```bash
-python cascade_guard/training/grpo_train.py \
+python training/train_grpo.py \
   --task task_easy \
   --steps 200 \
   --model Qwen/Qwen2.5-1.5B-Instruct

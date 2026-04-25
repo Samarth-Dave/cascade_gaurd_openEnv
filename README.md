@@ -214,10 +214,10 @@ Open two terminals.
 
 ### Terminal 1 - backend
 
-From `cascade_gaurd_openEnv`:
+From the repository root:
 
 ```powershell
-python server/app.py
+python -m uvicorn cascade_guard.server.app:app --host 0.0.0.0 --port 8000
 ```
 
 The backend starts on:

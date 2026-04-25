@@ -1,10 +1,4 @@
 from __future__ import annotations
-import sys
-import os
-
-ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, ROOT_DIR)
-
 
 import asyncio
 import copy
@@ -21,9 +15,28 @@ from functools import lru_cache
 from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
-from client import CascadeGuardEnv
-from models import CascadeAction
-from tasks import TASK_CONFIGS, TASK_SEED_SPLITS
+
+ROOT_DIR = Path(__file__).resolve().parent
+PACKAGE_PARENT = ROOT_DIR.parent
+
+try:
+    from cascade_guard.client import CascadeGuardEnv
+    from cascade_guard.models import CascadeAction
+    from cascade_guard.tasks import TASK_CONFIGS, TASK_SEED_SPLITS
+except ModuleNotFoundError:
+    if str(PACKAGE_PARENT) not in sys.path:
+        sys.path.insert(0, str(PACKAGE_PARENT))
+    try:
+        from cascade_guard.client import CascadeGuardEnv
+        from cascade_guard.models import CascadeAction
+        from cascade_guard.tasks import TASK_CONFIGS, TASK_SEED_SPLITS
+    except ModuleNotFoundError:
+        # Legacy repo-root execution fallback.
+        if str(ROOT_DIR) not in sys.path:
+            sys.path.insert(0, str(ROOT_DIR))
+        from client import CascadeGuardEnv
+        from models import CascadeAction
+        from tasks import TASK_CONFIGS, TASK_SEED_SPLITS
 
 # Local planner disabled to avoid local/server behavior drift during evaluation.
 LocalCascadeEnvironment = None
@@ -1544,10 +1557,13 @@ async def run_task(
         grade_fn = grade_episode
         if grade_fn is None:
             try:
-                from server.graders import grade as grade_fn
-            except Exception as exc:
-                _debug(f"[WARN] grader import failed: {exc}")
-                grade_fn = None
+                from cascade_guard.server.graders import grade as grade_fn
+            except Exception:
+                try:
+                    from server.graders import grade as grade_fn
+                except Exception as exc:
+                    _debug(f"[WARN] grader import failed: {exc}")
+                    grade_fn = None
 
         try:
             state_data = await env.state()

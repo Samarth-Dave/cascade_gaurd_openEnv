@@ -13,7 +13,7 @@ python_requires: ">=3.11"
 
 type: space
 runtime: fastapi
-app: server.app:app
+app: cascade_guard.server.app:app
 port: 8000
 
 environment:
