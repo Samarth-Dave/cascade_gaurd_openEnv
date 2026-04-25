@@ -193,7 +193,12 @@ class CascadeEnvironment(Environment):
         if isinstance(params, dict):
             training_mode = params.get("training_mode", training_mode)
         self._training_mode = bool(training_mode)
-        self._reward_noise_scale = 0.05 if self._reward_mode == "grpo" else 0.0
+        # Reward noise was originally added to break ties in the legacy
+        # teacher-relative GRPO reward (6.0*score_delta). Under the redesigned
+        # tanh-scaled reward (training/train_grpo.py::cascade_grpo_reward),
+        # 0.05 N(0,1) noise becomes a meaningful chunk of the signal range
+        # (~3-7%) and adds variance unrelated to the action. Keep at 0.0.
+        self._reward_noise_scale = 0.0
         resolved_seed = seed if seed is not None else resolve_seed(
             self._task_id,
             split=scenario_split,

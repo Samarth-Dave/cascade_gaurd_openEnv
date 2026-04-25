@@ -1487,11 +1487,21 @@ def make_grpo_reward_fn(CascadeEnvironment, CascadeAction, parse_action_from_res
         teacher_policy=None,
         **kwargs,
     ) -> List[float]:
-        """Teacher-relative GRPO reward with strict parseability pressure."""
+        """Step-reward-dominant GRPO reward with exploration bonus and rich telemetry.
+
+        Replaces the previous teacher-relative scoring (which collapsed to ~0
+        signal because (a) one-step grader deltas are bounded by 1/T on
+        time-averaged sub-scores and (b) post-SFT models tend to copy the
+        recorded teacher action, making score_delta == 0 by construction).
+        """
         nonlocal reward_call_count
         reward_call_count += 1
         rewards: List[float] = []
         action_log: List[str] = []
+        teacher_action_log: List[str] = []
+        score_delta_log: List[float] = []
+        step_delta_log: List[float] = []
+        explore_bonus_count = 0
         n = len(completions)
         task_ids = _ensure_list(task_id, n, "task_easy")
         seeds = _ensure_list(seed, n, 42)
@@ -1572,8 +1582,33 @@ def make_grpo_reward_fn(CascadeEnvironment, CascadeAction, parse_action_from_res
             raw_teacher = float((teacher_next_obs.metadata or {}).get("raw_reward", teacher_next_obs.reward))
             step_delta = raw_agent - raw_teacher
 
-            # Main objective: causal improvement relative to teacher action from the same state.
-            reward = 6.0 * score_delta + 0.35 * step_delta
+            score_delta_log.append(score_delta)
+            step_delta_log.append(step_delta)
+
+            # ── Step-reward as primary signal ──────────────────────────────
+            # The env's per-step _compute_reward varies meaningfully per
+            # action: hospital save +0.08, hospital fail -0.50, recovery
+            # +0.30, cascade impact -N, etc. (natural per-step magnitude
+            # ~ [-1.0, +0.5]).
+            # tanh squashes outliers to keep groups from being dominated by
+            # a single catastrophic completion.
+            reward = 1.5 * math.tanh(raw_agent / 0.5)        # absolute step quality (high-variance)
+            reward += 0.6 * math.tanh(step_delta / 0.4)      # vs-teacher tiebreaker
+            reward += 0.4 * math.tanh(score_delta * 30.0)    # episode-level direction (small but signed)
+
+            # ── Exploration bonus ──────────────────────────────────────────
+            # Reward the agent for trying actions different from the teacher
+            # when the result is at least non-harmful. Directly attacks the
+            # "agent == teacher → 0 signal" trap: as the model converges to
+            # imitate the teacher under SFT, this term creates a positive
+            # gradient toward divergent-but-safe behaviors.
+            agent_act_key = (agent_action.action_type, agent_action.target_node_id)
+            teacher_act_key = (teacher_action.action_type, teacher_action.target_node_id)
+            if agent_act_key != teacher_act_key and agent_meta.get("action_valid", True):
+                if critical_after <= critical_before and failed_after <= failed_before + 1:
+                    reward += 0.18
+                    explore_bonus_count += 1
+            teacher_action_log.append(f"{teacher_action.action_type}({teacher_action.target_node_id})")
 
             # Parseability is non-negotiable; unparseable completions receive a large penalty.
             if not parseable:
@@ -1668,33 +1703,58 @@ def make_grpo_reward_fn(CascadeEnvironment, CascadeAction, parse_action_from_res
 
             rewards.append(float(max(-4.0, min(4.0, reward))))
 
-        # ── Diversity diagnostic ──────────────────────────────────────
-        # Log action diversity and reward variance so we can detect
-        # diversity collapse (all completions → same action → 0 advantage).
+        # ── Pipeline telemetry ────────────────────────────────────────
+        # Surfaces WHICH reward component carries variance so the user can
+        # diagnose pipeline failures (zero-variance groups, full teacher
+        # imitation, dead grader signal) without re-running training.
         if reward_stats_every > 0 and rewards and (reward_call_count % reward_stats_every == 0):
             raw_mu = statistics.mean(rewards)
             raw_sd = statistics.pstdev(rewards) if len(rewards) > 1 else 0.0
             unique_actions = len(set(action_log)) if action_log else 0
+            teacher_match = sum(
+                1 for a, t in zip(action_log, teacher_action_log) if a == t
+            )
+            score_delta_min = min(score_delta_log) if score_delta_log else 0.0
+            score_delta_max = max(score_delta_log) if score_delta_log else 0.0
+            step_delta_min = min(step_delta_log) if step_delta_log else 0.0
+            step_delta_max = max(step_delta_log) if step_delta_log else 0.0
             log.info(
-                "GRPO reward  call=%d  n=%d  mean=%.4f  std=%.4f  min=%.4f  max=%.4f  "
-                "unique_actions=%d/%d  actions=%s",
+                "GRPO[%d] n=%d  reward mu=%.3f sd=%.3f  unique_act=%d/%d  "
+                "teacher_match=%d/%d  explore=%d/%d  "
+                "score_d=[%.4f,%.4f] step_d=[%.3f,%.3f]",
                 reward_call_count,
                 len(rewards),
-                raw_mu, raw_sd, min(rewards), max(rewards),
+                raw_mu, raw_sd,
                 unique_actions, len(rewards),
-                action_log[:8],
+                teacher_match, len(rewards),
+                explore_bonus_count, len(rewards),
+                score_delta_min, score_delta_max,
+                step_delta_min, step_delta_max,
             )
-            if raw_sd < 1e-4:
+            if raw_sd < 1e-3:
                 log.warning(
-                    "  ⚠ Near-zero reward std (%.6f) — all completions likely "
-                    "produced the same action. Increase temperature or "
-                    "num_generations.",
+                    "  ZERO-VARIANCE GROUP (sd=%.6f) — gradient will be ~zero this step. "
+                    "Raise temperature, increase num_generations, or shorten SFT.",
                     raw_sd,
+                )
+            if teacher_match == len(rewards) and len(rewards) > 1:
+                log.warning(
+                    "  ALL %d completions matched teacher action exactly — "
+                    "exploration bonus inactive, score_delta forced to 0. "
+                    "SFT may have over-fit teacher; raise temperature or "
+                    "reduce SFT epochs.",
+                    len(rewards),
+                )
+            if abs(score_delta_max - score_delta_min) < 1e-4 and len(rewards) > 1:
+                log.warning(
+                    "  GRADER INSENSITIVE: score_delta range = %.6f across the group. "
+                    "One-step grader is providing no signal; rely on step_delta and exploration bonus.",
+                    abs(score_delta_max - score_delta_min),
                 )
 
         # NOTE: Do NOT group-normalize here. TRL's GRPOTrainer already
         # computes per-group advantages = (reward - group_mean) / group_std.
-        # Normalizing before returning makes TRL see mean≈0 rewards at every
+        # Normalizing before returning makes TRL see mean ~0 rewards at every
         # step (masking real signal) and collapses near-zero-variance groups
         # to exactly 0.
 
