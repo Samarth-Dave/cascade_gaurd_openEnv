@@ -266,9 +266,13 @@ def _generate(model, tok, system_prompt: str, user_prompt: str,
 def _run_episode(task_id: str, seed: int, model, tok,
                  max_steps: int, max_new_tokens: int) -> Dict[str, Any]:
     env = CascadeEnvironment()
-    env.reset(
-        task_id=task_id, seed=seed,
-        scenario_split="train", reward_mode="grpo", training_mode=True,
+
+    # ✅ BUG 1 FIX: remove scenario_split, SAVE the returned obs
+    obs = env.reset(
+        task_id=task_id,
+        seed=seed,
+        reward_mode="grpo",
+        training_mode=True,
     )
 
     total_reward = 0.0
@@ -279,8 +283,11 @@ def _run_episode(task_id: str, seed: int, model, tok,
     times: List[float] = []
 
     for step in range(max_steps):
-        legal = env.get_legal_actions()
-        prompt = _build_user_prompt(env._build_observation(), step, max_steps, legal)
+        # ✅ BUG 2 FIX: use obs returned from reset/step, not env._build_observation()
+        # ✅ BUG 3 FIX: get legal actions from obs attribute, not env.get_legal_actions()
+        legal = getattr(obs, "legal_actions", []) or []
+
+        prompt = _build_user_prompt(obs, step, max_steps, legal)
         raw, n_tok, dt = _generate(model, tok, SYSTEM_PROMPT, prompt, max_new_tokens)
         tokens_used.append(n_tok)
         times.append(dt)
@@ -296,6 +303,7 @@ def _run_episode(task_id: str, seed: int, model, tok,
         else:
             action_dict = legal[0] if legal else {"action_type": "wait", "target_node_id": None}
 
+        # env.step() returns the NEXT obs — save it
         obs = env.step(CascadeAction(
             action_type=action_dict.get("action_type", "wait"),
             target_node_id=action_dict.get("target_node_id"),
@@ -303,10 +311,12 @@ def _run_episode(task_id: str, seed: int, model, tok,
         ))
         total_reward += float(getattr(obs, "reward", 0.0) or 0.0)
         n_steps += 1
-        if getattr(obs, "done", False):
+        if getattr(obs, "done", False) or getattr(obs, "terminated", False):
             break
 
-    final_score = float(getattr(env.state, "score", 0.5) or 0.5)
+    final_score = float(getattr(obs, "episode_score", None)
+                        or getattr(env, "episode_score", None)
+                        or 0.5)
     return {
         "task_id": task_id,
         "seed": seed,
