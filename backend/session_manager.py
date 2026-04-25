@@ -25,6 +25,7 @@ class SessionRecord:
     current_state: Optional[EpisodeState] = None
     trajectory: List[TrajectoryItem] = field(default_factory=list)
     event_queue: asyncio.Queue[WsEvent] = field(default_factory=asyncio.Queue)
+    env_client: Any = None
 
     def to_history_item(self) -> EpisodeHistoryItem:
         current = self.current_state or EpisodeState(
@@ -124,3 +125,30 @@ class SessionManager:
     async def history(self) -> List[EpisodeHistoryItem]:
         async with self._lock:
             return [self._sessions[session_id].to_history_item() for session_id in self._completed_order]
+
+    async def close_client(self, session_id: str) -> None:
+        session = await self.get(session_id)
+        client = None if session is None else session.env_client
+        if client is None:
+            return
+        try:
+            await client.close()
+        finally:
+            async with self._lock:
+                if session_id in self._sessions:
+                    self._sessions[session_id].env_client = None
+
+    async def close_all_clients(self) -> None:
+        async with self._lock:
+            active_clients = [
+                session.env_client
+                for session in self._sessions.values()
+                if session.env_client is not None
+            ]
+            for session in self._sessions.values():
+                session.env_client = None
+        for client in active_clients:
+            try:
+                await client.close()
+            except Exception:
+                pass

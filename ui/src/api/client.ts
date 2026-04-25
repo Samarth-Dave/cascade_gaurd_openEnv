@@ -13,6 +13,10 @@ import type {
 } from "@/types";
 
 const trim = (value: string | undefined) => (value ?? "").trim().replace(/\/+$/, "");
+const pathForApi = (path: string) =>
+  API_BASE_URL.endsWith("/api") && path.startsWith("/api/")
+    ? path.slice(4)
+    : path;
 
 const API_BASE_URL = trim(import.meta.env.VITE_API_URL);
 const WS_BASE_URL = trim(import.meta.env.VITE_WS_URL) || API_BASE_URL.replace(/^http/i, "ws");
@@ -71,7 +75,7 @@ export const apiClient = {
     }),
 
   stepEpisode: (sessionId: string, action: string, target: string | null) =>
-    request<StepResult>("/api/episode/step", {
+    request<StepResult>(pathForApi("/api/episode/step"), {
       method: "POST",
       json: { session_id: sessionId, action, target },
     }),

@@ -4,6 +4,7 @@ import asyncio
 import csv
 import io
 import json
+import logging
 import math
 import os
 import sys
@@ -78,6 +79,28 @@ SECTOR_KEYS = ("power", "water", "hospital", "telecom")
 BASELINE_PATH = ROOT_DIR / "baseline_results.json"
 REAL_NODES_PATH = ROOT_DIR / "data" / "real_nodes.json"
 DATASET_PATH = ROOT_DIR / "data" / "cascadeguard_sft_dataset.csv"
+logger = logging.getLogger("cascadeguard.backend")
+MUMBAI_NODE_LOOKUP_BY_ID: Dict[str, Dict[str, Any]] = {}
+MISSING_GEO_NODE_IDS: set[str] = set()
+
+def _load_mumbai_real_node_lookup() -> Dict[str, Dict[str, Any]]:
+    if not REAL_NODES_PATH.exists():
+        logger.warning("real_nodes.json was not found at startup: %s", REAL_NODES_PATH)
+        return {}
+    payload = json.loads(REAL_NODES_PATH.read_text(encoding="utf-8"))
+    nodes = payload.get("mumbai", {}).get("nodes", [])
+    by_id: Dict[str, Dict[str, Any]] = {}
+    for node in nodes:
+        node_id = str(node.get("id", "")).strip()
+        if not node_id:
+            continue
+        by_id[node_id] = {
+            "lat": float(node.get("lat", 0.0)),
+            "lng": float(node.get("lng", 0.0)),
+            "service_radius_km": float(node.get("service_radius_km", 0.0)),
+            "name": str(node.get("name", "")),
+        }
+    return by_id
 
 ui_space_url = os.getenv("UI_SPACE_URL", "").strip()
 allowed_origins = ["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:8080"]
@@ -88,7 +111,7 @@ allowed_origins.append("*")
 app = FastAPI(title="CascadeGuard Backend", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_origins,
+    allow_origins=["*"],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -101,6 +124,9 @@ session_manager = SessionManager()
 
 @app.on_event("startup")
 async def on_startup() -> None:
+    global MUMBAI_NODE_LOOKUP_BY_ID
+    MUMBAI_NODE_LOOKUP_BY_ID = _load_mumbai_real_node_lookup()
+    logger.info("Loaded %s Mumbai geo nodes from %s", len(MUMBAI_NODE_LOOKUP_BY_ID), REAL_NODES_PATH)
     try:
         loaded_source = await asyncio.to_thread(llm_client.load_model)
         print(f"Model loaded: {loaded_source}")
@@ -110,6 +136,7 @@ async def on_startup() -> None:
 
 @app.on_event("shutdown")
 async def on_shutdown() -> None:
+    await session_manager.close_all_clients()
     await env_client.close()
 
 
@@ -123,10 +150,16 @@ async def health() -> HealthResponse:
 async def reset_episode(payload: EpisodeResetRequest) -> EpisodeResetResponse:
     requested_task = payload.task
     env_task = TASK_ALIASES.get(requested_task, requested_task)
-    raw_observation = await env_client.reset(env_task, payload.seed)
-    raw_state = await env_client.get_state()
+    episode_env_client = EnvClient()
+    try:
+        raw_observation = await episode_env_client.reset(env_task, payload.seed)
+        raw_state = await episode_env_client.get_state()
+    except Exception:
+        await episode_env_client.close()
+        raise
 
     session = await session_manager.create(requested_task, env_task, payload.seed)
+    session.env_client = episode_env_client
     episode_state = _build_episode_state(session.session_id, requested_task, raw_observation, raw_state)
     await session_manager.update(
         session.session_id,
@@ -320,13 +353,22 @@ async def _execute_step(
     session = await _require_session(session_id)
     if session.done:
         raise HTTPException(status_code=409, detail="Episode already completed.")
+    if session.env_client is None:
+        raise HTTPException(status_code=500, detail="Environment session not initialized.")
 
     previous_observation = session.raw_observation
-    step_payload = await env_client.step(env_action, target, parameters)
-    raw_observation = step_payload.get("observation", {})
-    raw_state = await env_client.get_state()
+    step_payload = await session.env_client.step(env_action, target, parameters)
+    raw_observation = dict(step_payload.get("observation", {}))
+    if not raw_observation.get("nodes"):
+        raw_observation["nodes"] = previous_observation.get("nodes", [])
+    if not raw_observation.get("edges"):
+        raw_observation["edges"] = previous_observation.get("edges", [])
+    if not raw_observation.get("sector_summary"):
+        raw_observation["sector_summary"] = previous_observation.get("sector_summary", {})
+    raw_state = await session.env_client.get_state()
 
     episode_state = _build_episode_state(session_id, session.requested_task, raw_observation, raw_state)
+    episode_state.done = bool(step_payload.get("done", episode_state.done))
     breakdown = _build_grader_breakdown(raw_observation, raw_state, session.budget_initial or episode_state.budget)
     score = episode_state.episode_score
     await session_manager.update(
@@ -363,6 +405,8 @@ async def _execute_step(
     )
     for event in _derive_events(previous_observation, raw_observation, result):
         await session_manager.publish(session_id, event)
+    if result.done:
+        await session_manager.close_client(session_id)
     return result
 
 
@@ -423,13 +467,16 @@ def _build_episode_state(session_id: str, requested_task: str, raw_observation: 
 
 def _build_nodes(raw_observation: Dict[str, Any]) -> List[InfraNode]:
     nodes: List[InfraNode] = []
+    isolated_nodes = set(raw_observation.get("metadata", {}).get("isolated_nodes", []))
     for node in raw_observation.get("nodes", []):
+        node_id = str(node.get("node_id"))
         health = float(node.get("health", 0.0))
-        status = _node_status(node)
+        geo = _resolve_node_geo(node)
+        status = _node_status(node, isolated_nodes)
         nodes.append(
             InfraNode(
-                id=str(node.get("node_id")),
-                label=str(node.get("real_name") or node.get("node_id")),
+                id=node_id,
+                label=str(node.get("real_name") or node_id),
                 sector=str(node.get("sector", "power")),
                 health=round(health, 4),
                 health_pct=max(0, min(100, round(health * 100))),
@@ -437,13 +484,14 @@ def _build_nodes(raw_observation: Dict[str, Any]) -> List[InfraNode]:
                 is_critical=bool(node.get("is_critical", False)),
                 is_operational=bool(node.get("is_operational", True)),
                 is_hardened=bool(node.get("is_hardened", False)),
-                lat=float(node.get("lat", 0.0)),
-                lng=float(node.get("lon", 0.0)),
-                service_radius_km=float(node.get("service_radius_km", 0.0)),
+                lat=geo["lat"],
+                lng=geo["lng"],
+                service_radius_km=geo["service_radius_km"],
                 metadata={
                     "load": float(node.get("load", 0.0)),
                     "observation_delayed": bool(node.get("observation_delayed", False)),
                     "observation_confidence": float(node.get("observation_confidence", 1.0)),
+                    "isolated": node_id in isolated_nodes,
                 },
             )
         )
@@ -506,13 +554,35 @@ def _sector_health(raw_observation: Dict[str, Any], raw_state: Dict[str, Any]) -
     )
 
 
-def _node_status(node: Dict[str, Any]) -> str:
+def _resolve_node_geo(node: Dict[str, Any]) -> Dict[str, float]:
+    node_id = str(node.get("node_id", ""))
+    direct = MUMBAI_NODE_LOOKUP_BY_ID.get(node_id)
+    if direct is not None:
+        return {
+            "lat": float(direct["lat"]),
+            "lng": float(direct["lng"]),
+            "service_radius_km": float(direct["service_radius_km"]),
+        }
+    if node_id and node_id not in MISSING_GEO_NODE_IDS:
+        MISSING_GEO_NODE_IDS.add(node_id)
+        logger.warning("No Mumbai geo coordinates found in real_nodes.json for node_id=%s", node_id)
+    return {
+        "lat": float(node.get("lat", 0.0)),
+        "lng": float(node.get("lon", 0.0)),
+        "service_radius_km": float(node.get("service_radius_km", 0.0)),
+    }
+
+
+def _node_status(node: Dict[str, Any], isolated_nodes: set[str]) -> str:
+    node_id = str(node.get("node_id", ""))
+    if node_id in isolated_nodes:
+        return "isolated"
     if not bool(node.get("is_operational", True)):
         return "critical"
     health = float(node.get("health", 0.0))
-    if health >= 0.8:
+    if health > 0.7:
         return "healthy"
-    if health >= 0.45:
+    if health >= 0.3:
         return "degraded"
     return "critical"
 

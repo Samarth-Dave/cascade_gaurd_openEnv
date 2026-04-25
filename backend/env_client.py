@@ -41,9 +41,12 @@ class EnvClient:
         parameters: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
-            "action_type": action,
-            "target_node_id": target,
-            "parameters": parameters or {},
+            "action": {
+                "action_type": action,
+                "target_node_id": target,
+                "parameters": parameters or {},
+                "metadata": {},
+            }
         }
         data = await self._request("POST", "/step", payload)
         if "observation" in data:

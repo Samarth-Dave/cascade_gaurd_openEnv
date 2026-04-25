@@ -13,6 +13,7 @@ import type {
   AgentAction,
   EpisodeResetResponse,
   EpisodeState,
+  InfraNode,
   StepResult,
   Task,
   WsEvent,
@@ -25,6 +26,8 @@ interface CascadeContextValue {
   setConfig: (next: { task: Task; seed: number }) => void;
   sessionId: string | null;
   state: EpisodeState | null;
+  currentNodes: InfraNode[];
+  currentEdges: EpisodeState["edges"];
   lastStepResult: StepResult | null;
   logs: LogLine[];
   events: WsEvent[];
@@ -47,6 +50,8 @@ export function CascadeProvider({ children }: { children: ReactNode }) {
   const [config, setConfig] = useState<{ task: Task; seed: number }>({ task: "task_hard", seed: 42 });
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [state, setState] = useState<EpisodeState | null>(null);
+  const [currentNodes, setCurrentNodes] = useState<InfraNode[]>([]);
+  const [currentEdges, setCurrentEdges] = useState<EpisodeState["edges"]>([]);
   const [lastStepResult, setLastStepResult] = useState<StepResult | null>(null);
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [agentThinking, setAgentThinking] = useState("");
@@ -63,9 +68,14 @@ export function CascadeProvider({ children }: { children: ReactNode }) {
     if (stream.lastEvent.type === "step_result") {
       const payload = stream.lastEvent.payload as { result?: StepResult; state?: EpisodeState };
       if (payload.result?.new_state) {
-        setState(payload.result.new_state);
+        const nextState = hydrateStepState(payload.result);
+        setState(nextState);
+        setCurrentNodes(nextState.nodes);
+        setCurrentEdges(nextState.edges);
       } else if (payload.state) {
         setState(payload.state);
+        setCurrentNodes(payload.state.nodes);
+        setCurrentEdges(payload.state.edges);
       }
     }
   }, [stream.lastEvent]);
@@ -105,6 +115,8 @@ export function CascadeProvider({ children }: { children: ReactNode }) {
       setConfig({ task, seed });
       setSessionId(response.session_id);
       setState(response.state);
+      setCurrentNodes(response.nodes.length > 0 ? response.nodes : response.state.nodes);
+      setCurrentEdges(response.edges.length > 0 ? response.edges : response.state.edges);
       setLastStepResult(null);
       setAgentThinking("");
       setAgentAction(null);
@@ -123,7 +135,7 @@ export function CascadeProvider({ children }: { children: ReactNode }) {
     setError(null);
     try {
       const result = await apiClient.stepEpisode(sessionId, action, target);
-      handleStepResult(result, `Manual action ${action}${target ? ` -> ${target}` : ""}`);
+      handleStepResult(result, `Manual action ${action}${target ? ` -> ${target}` : ""}`, action, target);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Action failed.");
     } finally {
@@ -137,7 +149,7 @@ export function CascadeProvider({ children }: { children: ReactNode }) {
     setError(null);
     try {
       const result = await apiClient.agentStep(sessionId);
-      handleStepResult(result, "Agent step executed.");
+      handleStepResult(result, "Agent step executed.", result.agent_action?.action ?? null, result.agent_action?.target ?? null);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Agent step failed.");
       setAutoRun(false);
@@ -146,12 +158,29 @@ export function CascadeProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  function handleStepResult(result: StepResult, message: string) {
-    setLastStepResult(result);
-    setState(result.new_state);
+  function handleStepResult(
+    result: StepResult,
+    message: string,
+    actionLabel: string | null,
+    actionTarget: string | null,
+  ) {
+    const nextState = hydrateStepState(result);
+    const enrichedResult = {
+      ...result,
+      new_state: nextState,
+      nodes: nextState.nodes,
+      edges: nextState.edges,
+    };
+    const previousState = state;
+    setLastStepResult(enrichedResult);
+    setState(nextState);
+    setCurrentNodes(nextState.nodes);
+    setCurrentEdges(nextState.edges);
     setAgentThinking(result.agent_thinking ?? "");
     setAgentAction(result.agent_action ?? null);
     appendLog(result.done ? "OK" : "INFO", message);
+    const feedback = buildActionFeedbackEntry(previousState, enrichedResult, actionLabel, actionTarget);
+    appendLog(feedback.level, feedback.message);
     if (result.done) {
       setAutoRun(false);
       void queryClient.invalidateQueries({ queryKey: ["episode-history"] });
@@ -164,6 +193,8 @@ export function CascadeProvider({ children }: { children: ReactNode }) {
       setConfig,
       sessionId,
       state,
+      currentNodes,
+      currentEdges,
       lastStepResult,
       logs,
       events: stream.events,
@@ -178,10 +209,88 @@ export function CascadeProvider({ children }: { children: ReactNode }) {
       stepEpisode,
       runAgentStep,
     }),
-    [agentAction, agentThinking, autoRun, config, error, lastStepResult, logs, pending, sessionId, state, stream.events, stream.isConnected],
+    [agentAction, agentThinking, autoRun, config, currentEdges, currentNodes, error, lastStepResult, logs, pending, sessionId, state, stream.events, stream.isConnected],
   );
 
   return <CascadeContext.Provider value={value}>{children}</CascadeContext.Provider>;
+}
+
+function hydrateStepState(result: StepResult): EpisodeState {
+  return {
+    ...result.new_state,
+    done: result.done || result.new_state.done,
+    nodes: result.nodes.length > 0 ? result.nodes : result.new_state.nodes,
+    edges: result.edges.length > 0 ? result.edges : result.new_state.edges,
+  };
+}
+
+function findNode(nodes: InfraNode[], nodeId: string | null): InfraNode | null {
+  if (!nodeId) {
+    return null;
+  }
+  return nodes.find((node) => node.id === nodeId) ?? null;
+}
+
+function formatHealth(node: InfraNode | null): string {
+  if (!node) {
+    return "n/a";
+  }
+  return `${node.health_pct}%`;
+}
+
+function appendReasoningSuffix(
+  beforeNode: InfraNode | null,
+  afterNode: InfraNode | null,
+  cascadeChanged: boolean,
+  rewardStep: number,
+): string {
+  if (beforeNode && beforeNode.is_operational && beforeNode.health_pct > 70 && afterNode && beforeNode.health_pct === afterNode.health_pct && rewardStep <= 0.05) {
+    return " Target was already healthy and operational, so the action had little effect.";
+  }
+  if (beforeNode && beforeNode.is_operational && afterNode && beforeNode.health_pct === afterNode.health_pct && !cascadeChanged && rewardStep <= 0.05) {
+    return " Node state and cascade depth barely changed, so reward stayed low.";
+  }
+  if (!cascadeChanged && rewardStep <= 0.05) {
+    return " Cascade depth did not improve, which limited the reward.";
+  }
+  return "";
+}
+
+function buildActionFeedbackMessage(
+  previousState: EpisodeState | null,
+  result: StepResult,
+  actionLabel: string | null,
+  actionTarget: string | null,
+): string {
+  const resolvedAction = actionLabel ?? result.agent_action?.action ?? "UNKNOWN";
+  const resolvedTarget = actionTarget ?? result.agent_action?.target ?? null;
+  const beforeNode = previousState ? findNode(previousState.nodes, resolvedTarget) : null;
+  const afterNode = findNode(result.new_state.nodes, resolvedTarget);
+  const previousCascade = previousState?.cascade_depth ?? result.new_state.cascade_depth;
+  const nextCascade = result.new_state.cascade_depth;
+  const cascadeChanged = previousCascade !== nextCascade;
+  const cascadePart =
+    previousState === null
+      ? `cascade ${nextCascade}`
+      : `cascade ${previousCascade} -> ${nextCascade}`;
+  return (
+    `${resolvedAction}${resolvedTarget ? ` ${resolvedTarget}` : ""} | ` +
+    `health ${formatHealth(beforeNode)} -> ${formatHealth(afterNode)} | ` +
+    `reward ${result.reward_step >= 0 ? "+" : ""}${result.reward_step.toFixed(3)} | ` +
+    `${cascadePart}.` +
+    appendReasoningSuffix(beforeNode, afterNode, cascadeChanged, result.reward_step)
+  );
+}
+
+function buildActionFeedbackEntry(
+  previousState: EpisodeState | null,
+  result: StepResult,
+  actionLabel: string | null,
+  actionTarget: string | null,
+) {
+  const message = buildActionFeedbackMessage(previousState, result, actionLabel, actionTarget);
+  const level = result.reward_step <= 0.05 ? "WARN" : result.reward_step > 0 ? "OK" : "CRIT";
+  return { level, message };
 }
 
 export function useCascade() {

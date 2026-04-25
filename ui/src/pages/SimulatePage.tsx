@@ -17,7 +17,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { useCascade } from "@/context/CascadeContext";
-import type { Task } from "@/types";
+import type { InfraNode, Task } from "@/types";
 
 const taskOptions: Task[] = [
   "task_easy",
@@ -29,11 +29,29 @@ const taskOptions: Task[] = [
 
 const manualActions = ["MONITOR", "REPAIR", "ISOLATE", "REROUTE"];
 
+function getActionGuard(action: string, node: InfraNode | null) {
+  if (action !== "MONITOR" && !node) {
+    return { disabled: true, message: "Select a target node before executing this action." };
+  }
+  if (!node) {
+    return { disabled: false, message: null };
+  }
+  if (action === "REPAIR" && node.is_operational) {
+    return { disabled: true, message: "Repair is only useful on failed nodes. This target is still operational." };
+  }
+  if (action === "ISOLATE" && node.is_operational) {
+    return { disabled: true, message: "Isolate only makes sense for failed nodes. This target is still operational." };
+  }
+  return { disabled: false, message: null };
+}
+
 export default function SimulatePage() {
   const {
     config,
     setConfig,
     state,
+    currentNodes,
+    currentEdges,
     lastStepResult,
     logs,
     agentThinking,
@@ -57,7 +75,9 @@ export default function SimulatePage() {
     enabled: !state,
   });
 
-  const availableTargets = state?.nodes ?? [];
+  const availableTargets = currentNodes;
+  const selectedManualNode = availableTargets.find((node) => node.id === manualTarget) ?? null;
+  const manualActionGuard = getActionGuard(manualAction, selectedManualNode);
 
   return (
     <div className="space-y-6">
@@ -197,8 +217,8 @@ export default function SimulatePage() {
             <Skeleton className="h-[620px] rounded-[28px]" />
           ) : (
             <InfrastructureGraph
-              nodes={state?.nodes ?? []}
-              edges={state?.edges ?? []}
+              nodes={currentNodes}
+              edges={currentEdges}
               onAction={(action, target) => void stepEpisode(action, target)}
             />
           )}
@@ -238,7 +258,16 @@ export default function SimulatePage() {
                   </SelectContent>
                 </Select>
               </div>
-              <Button className="w-full" onClick={() => void stepEpisode(manualAction, manualTarget)} disabled={!sessionId || pending}>
+              {manualActionGuard.message ? (
+                <div className="rounded-2xl border border-[hsl(var(--amber))]/25 bg-[hsl(var(--amber))]/10 px-3 py-2 text-sm text-[hsl(var(--amber))]">
+                  {manualActionGuard.message}
+                </div>
+              ) : null}
+              <Button
+                className="w-full"
+                onClick={() => void stepEpisode(manualAction, manualTarget)}
+                disabled={!sessionId || pending || manualActionGuard.disabled}
+              >
                 Execute
               </Button>
             </div>
