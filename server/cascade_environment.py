@@ -1720,8 +1720,19 @@ class CascadeEnvironment(Environment):
                 components["r_hospital"] -= 0.30
                 r -= 0.30   # reduced from -0.50 to avoid double-hit instability
 
-        # Node fails during this step (all sectors, including any hospital)
-        components["r_newly_failed"] = -0.25 * len(newly_failed)
+        # Node fails during this step.
+        # Hospitals are EXCLUDED here because they already pay -0.50 in
+        # r_hospital above when newly_failed. Without this exclusion a single
+        # hospital fail costs -0.75 in one step (-0.50 hospital + -0.25 in
+        # this sum), which over-weights hospitals vs other reward terms and
+        # creates gradient instability for GRPO. Net hospital fail cost is
+        # now -0.50 (hospital-specific) only.
+        non_hospital_newly_failed = [
+            nid for nid in newly_failed
+            if self._node_states.get(nid) is not None
+            and self._node_states[nid].sector != "hospital"
+        ]
+        components["r_newly_failed"] = -0.25 * len(non_hospital_newly_failed)
         r += components["r_newly_failed"]
 
         # Recovery completes
@@ -1873,8 +1884,15 @@ class CascadeEnvironment(Environment):
         """Return additional penalty from long-unresolved failures (cascade debt).
 
         After 3+ steps of inaction on a failed node, downstream pressure builds:
-        each extra step of non-recovery adds -0.04 per deep-debt node.
-        Capped to prevent runaway penalties.
+        each extra step of non-recovery adds -0.04 per deep-debt node, with a
+        per-node ceiling of -0.20 (reached at 7+ unresolved steps).
+
+        The previous global cap of -0.40 was too aggressive — it meant the
+        agent received zero marginal signal once 2 nodes were both unresolved
+        for >=7 steps each, so "5 unresolved" felt the same as "2 unresolved"
+        in multi-failure scenarios. The per-node cap (-0.20) is the primary
+        bound; the relaxed -1.0 global cap is now only a safety guard against
+        pathological 5+ unresolved-node states blowing up the reward.
         """
         debt_penalty = 0.0
         for nid, steps_unresolved in self._unresolved_failure_steps.items():
@@ -1882,4 +1900,4 @@ class CascadeEnvironment(Environment):
                 # Extra -0.04 per step beyond 3, capped at -0.20 per node
                 extra = min(0.20, 0.04 * (steps_unresolved - 2))
                 debt_penalty += extra
-        return min(0.40, debt_penalty)  # global cap
+        return min(1.0, debt_penalty)  # relaxed global cap (was 0.40)

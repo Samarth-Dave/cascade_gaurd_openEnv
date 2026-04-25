@@ -110,6 +110,20 @@ These are deferred. The pipeline-level mitigation (reward redesign) addresses th
 
 Originally `_reward_noise_scale = 0.05` for `reward_mode="grpo"`. Under the legacy `6.0 × score_delta` reward this was tie-breaking noise; under the new tanh-scaled reward (range ≈ `[-2.5, +2.5]`) it became **3-7% of the signal range**, drowning out small differences. **Now set to `0.0`**.
 
+### Recently-applied reward fixes (verified against the source)
+
+Two real bugs in `_compute_reward` were identified during a pre-Cell-M audit and patched:
+
+1. **Hospital double-dip** *(was: hospital fail = -0.75; now: -0.50)*
+   Previously a hospital newly_failing paid `-0.50` (`r_hospital`) AND was included in `-0.25 × len(newly_failed)` (`r_newly_failed`), totalling -0.75 per hospital fail. The new code excludes hospitals from `r_newly_failed`, so a hospital fail costs exactly `-0.50` (consistent with the docstring's "BUG 4 FIX: Unified hospital penalty" comment). Reduces gradient instability where a single hospital event dominates the step's reward range.
+
+2. **Cascade-debt global cap relaxation** *(was: -0.40 hard cap; now: -1.0 soft guard)*
+   `_compute_cascade_debt_penalty` had a global `min(0.40, debt_penalty)` cap. With the per-node cap already at -0.20, the global cap kicked in at 2 nodes × ≥7 unresolved steps each, after which the agent saw zero marginal signal for additional unresolved nodes. Relaxed to `min(1.0, ...)` — keeps a safety guard against pathological states but preserves marginal "more failures = worse" signal in normal multi-failure scenarios.
+
+**What we did NOT change** (and why):
+- `grpo_verifier()` and the standalone `compute_reward()` in `reward.py` — these are dead code paths used only by `scripts/verify_*.py`. Our actual training reward (`cascade_grpo_reward` in `training/train_grpo.py`) consumes `raw_reward` directly from `_compute_reward`, so they were already aligned. Cleanup of `reward.py` is deferred to a future hygiene PR.
+- Strategic bonuses in `grpo_verifier` — same reason (dead code).
+
 ---
 
 ## 5. Termination logic
