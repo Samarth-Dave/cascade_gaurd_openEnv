@@ -362,6 +362,7 @@ def evaluate_model(model_id: str, tasks: List[str], episodes: int,
                         f"sec/step={res['mean_seconds']:.2f}"
                     )
                 except Exception as e:
+                    traceback.print_exc()
                     print(f"  {task_id:22s} ep{ep_i + 1}/{episodes}  ERROR: {str(e)[:120]}")
                     episode_results.append({
                         "task_id": task_id, "seed": seed,
