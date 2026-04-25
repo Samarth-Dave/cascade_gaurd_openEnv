@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Set
 
 from openenv.core.env_server import Environment
 
-from cascade_guard.models import (
+from models import (
     CascadeAction,
     CascadeObservation,
     CascadeState,
@@ -17,10 +17,10 @@ from cascade_guard.models import (
     NodeStatus,
     ObservationDiagnostics,
 )
-from cascade_guard.tasks import TASK_CONFIGS, materialize_task_config, resolve_seed
-from cascade_guard.server.graders import grade
+from tasks import TASK_CONFIGS, materialize_task_config, resolve_seed
+from server.graders import grade
 try:
-    from cascade_guard.geo_utils import (
+    from geo_utils import (
         compute_coverage_matrix,
         compute_cascade_mitigation,
         compute_obs_confidence,

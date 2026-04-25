@@ -4,6 +4,71 @@ A versioned record of every improvement sprint.
 
 ---
 
+## v2.5 — 2026-04-23 | GRPO Collapse Remediation (Reward + Prompt + Teacher Coverage)
+
+### Scope Completed
+
+This sprint targets the observed GRPO collapse mode (wait-only behavior, zero budget spend,
+and parse-fallback to wait) by aligning the training objective with causal action quality,
+tightening format/parse incentives, and increasing advanced-action coverage in both prompts
+and teacher state collection.
+
+### 1) GRPO Reward Redesign (Absolute -> Relative)
+
+| Change | File | Outcome |
+|---|---|---|
+| Replaced absolute episode-score reward with teacher-relative delta reward from the same reconstructed state (`score_agent - score_teacher`) | `training/train_grpo.py` | GRPO now optimizes action impact, not passive stability on teacher-prefix trajectories |
+| Added small step-level delta component (`raw_reward_agent - raw_reward_teacher`) | `training/train_grpo.py` | Improves local credit assignment when final score deltas are small |
+| Kept batch group normalization with low-variance guard | `training/train_grpo.py` | Prevents all-zero normalized rewards in low-spread groups |
+
+### 2) Parseability and Format Enforcement
+
+| Change | File | Outcome |
+|---|---|---|
+| Added shared parseability detector used in both reward path and evaluation path (`_looks_parseable_action`) | `training/train_grpo.py` | Train/eval parse semantics are now consistent |
+| Added strong negative reward for unparseable completions | `training/train_grpo.py` | Removes cheap fallback path where malformed outputs become `wait` |
+| Increased positive shaping for correctly structured action outputs | `training/train_grpo.py` | Directly rewards parseable structured outputs |
+
+### 3) Prompt Unification + Legal Action Coverage
+
+| Change | File | Outcome |
+|---|---|---|
+| Removed local training-only prompt divergence; training now uses canonical `make_training_prompt(...)` | `training/train_grpo.py` | Eliminates train-time prompt mismatch |
+| Evaluation generation now also uses canonical `make_training_prompt(...)` with live legal actions | `training/train_grpo.py` | Aligns inference-time prompt with training prompt structure |
+| Legal-action rendering changed from first-N truncation to stratified sampling by action type | `training/cot_prompt.py` | Advanced legal actions are represented when legal, rather than dropped by ordering |
+
+### 4) Teacher Policy + Exploration Expansion (Advanced Actions)
+
+| Change | File | Outcome |
+|---|---|---|
+| Extended sub-policy logic with guarded advanced interventions (`patch_scada`, `reroute`, `cross_sector_bridge`, `deploy_repair_crew`, `prioritize`, `multi_sector_lockdown`, conservative `controlled_cascade`) | `training/train_grpo.py` | Collected states now include richer high-tier decision patterns |
+| Added advanced-action-biased epsilon exploration when safe advanced legal actions exist | `training/train_grpo.py` | Increases action-space exposure without spamming unsafe expert moves |
+| Added safety checks to block obviously harmful expert actions (especially around critical/hospital nodes) | `training/train_grpo.py` | Reduces destructive exploration artifacts |
+
+### 5) Optional SFT Warm-Start
+
+| Change | File | Outcome |
+|---|---|---|
+| Added optional behavior-cloning stage before GRPO (`--sft-warmstart-steps`, `--sft-warmstart-lr`) | `training/train_grpo.py` | Allows stable parseable-action bootstrap before RL updates |
+| Added teacher action text/json fields to state collection | `training/train_grpo.py` | Provides direct supervised targets for warm-start |
+
+### 6) Documentation + Verification Notes
+
+| Artifact | File | Outcome |
+|---|---|---|
+| Added GRPO implementation note and verification checklist | `training/GRPO_NOTES.md` | Captures new objective, prompt wiring, and expected metric movement |
+| Python syntax/compile checks for updated training modules | `training/train_grpo.py`, `training/cot_prompt.py` | Static checks passed |
+| Reward smoke test | `training/train_grpo.py` | Produced non-zero reward in smoke path before model load |
+
+### Validation Status
+
+- Environment sanity checks and dataset/state collection paths are passing in smoke mode.
+- Reward smoke test is non-zero under the new relative objective.
+- Full end-to-end short training/evaluation run is pending local model availability due transient
+  Hugging Face download/connectivity issues observed on Windows (`WinError 10054`).
+
+---
+
 ## v2.4 — 2026-04-22 | Real-World OSM Infrastructure Upgrade & UI
 
 ### What Changed

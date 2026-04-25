@@ -32,7 +32,7 @@ USAGE:
   python train_grpo.py --no-eval
 
     # Optional behavior-cloning warm-start before GRPO
-    python train_grpo.py --sft-warmstart-steps 80
+    python train_grpo.py --sft-warmstart-steps 180
 
   # Resume from checkpoint
   python train_grpo.py --resume-from cascadeguard_grpo_local/checkpoint-100
@@ -121,7 +121,7 @@ import statistics
 import sys
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 # ── Third-party (installed by Unsloth installer + pip above) ─────────────
 import pandas as pd
@@ -191,20 +191,32 @@ def parse_args() -> argparse.Namespace:
                    help="LoRA alpha (default: 2 × lora-r)")
 
     # Training
-    p.add_argument("--steps",       type=int, default=300,
+    p.add_argument("--steps",       type=int, default=800,
                    help="Total GRPO training steps")
     p.add_argument("--states",      type=int, default=256,
                    help="Number of training state samples to collect")
     p.add_argument("--generations", type=int, default=8,
                    help="GRPO group size (completions per prompt)")
-    p.add_argument("--lr",          type=float, default=5e-6,
+    p.add_argument("--lr",          type=float, default=8e-6,
                    help="Learning rate")
     p.add_argument("--max-seq-len", type=int, default=2048)
-    p.add_argument("--max-completion-len", type=int, default=128)
-    p.add_argument("--sft-warmstart-steps", type=int, default=0,
+    p.add_argument("--max-completion-len", type=int, default=32)
+    p.add_argument("--sft-warmstart-steps", type=int, default=180,
                    help="Optional supervised warm-start steps before GRPO (0 disables)")
-    p.add_argument("--sft-warmstart-lr", type=float, default=1e-5,
+    p.add_argument("--sft-warmstart-lr", type=float, default=1.5e-5,
                    help="Learning rate for optional SFT warm-start")
+    p.add_argument("--action-only-prompts", action=argparse.BooleanOptionalAction, default=True,
+                   help="Use strict action-only output contract in GRPO/SFT prompts")
+    p.add_argument("--debug-parseability", action="store_true",
+                   help="Sample model completions and log parseability snapshots")
+    p.add_argument("--debug-parseability-samples", type=int, default=8,
+                   help="Number of prompt samples for parseability snapshots")
+    p.add_argument("--debug-hard-rollouts", action="store_true",
+                   help="Dump step-level rollout logs for hard tasks and policy comparisons")
+    p.add_argument("--debug-hard-rollout-seeds", type=int, default=1,
+                   help="Validation seeds per hard task when --debug-hard-rollouts is enabled")
+    p.add_argument("--reward-stats-every", type=int, default=20,
+                   help="Log pre-normalization reward mean/std every N reward calls (0 disables)")
 
     # Tasks
     p.add_argument("--tasks", nargs="+",
@@ -445,6 +457,7 @@ def make_training_sub_policies(CascadeAction, fallback_policy):
         degree = _node_degree(obs)
         failed_nodes = [n for n in obs.nodes if not n.is_operational]
         failed_sectors = {n.sector for n in failed_nodes}
+        recover_legal_exists = any(a.get("action_type") == "recover" for a in legal_actions)
 
         if obs.task_id == "task_cyberattack":
             patch_action = _pick_legal_action(
@@ -454,8 +467,47 @@ def make_training_sub_policies(CascadeAction, fallback_policy):
             )
             if patch_action is None:
                 patch_action = _pick_legal_action(legal_actions, "patch_scada")
-            if patch_action is not None and (obs.step <= 10 or pressure >= 0.45 or len(failed_nodes) >= 2):
+            # In cyberattack scenarios patch_scada should dominate early decisions.
+            if patch_action is not None and (obs.step <= 14 or pressure >= 0.30 or len(failed_nodes) >= 1):
                 return patch_action
+
+        if obs.task_id == "task_gen_blackout":
+            pending_set = set(obs.pending_recoveries)
+            if pending_set:
+                deploy_action = _pick_legal_action(
+                    legal_actions,
+                    "deploy_repair_crew",
+                    predicate=lambda a: (
+                        a.get("target_node_id") in pending_set
+                        and (
+                            str(a.get("target_node_id", "")).startswith("POWER_GEN")
+                            or str(a.get("target_node_id", "")).startswith("POWER_TRANS")
+                            or (a.get("target_node_id") in node_map and node_map[a.get("target_node_id")].is_critical)
+                        )
+                    ),
+                )
+                if deploy_action is not None:
+                    return deploy_action
+
+            hospital_risk = any(
+                (n.sector == "hospital") and ((not n.is_operational) or n.health < 0.65)
+                for n in obs.nodes
+            )
+            if hospital_risk:
+                reroute_to_hospital = _pick_legal_action(
+                    legal_actions,
+                    "reroute",
+                    predicate=lambda a: (
+                        (a.get("parameters") or {}).get("target") in node_map
+                        and node_map[(a.get("parameters") or {}).get("target")].sector == "hospital"
+                    ),
+                )
+                if reroute_to_hospital is not None:
+                    return reroute_to_hospital
+
+                bridge_action = _pick_legal_action(legal_actions, "cross_sector_bridge")
+                if bridge_action is not None:
+                    return bridge_action
 
         if obs.pending_recoveries:
             deploy_action = _pick_legal_action(
@@ -525,7 +577,15 @@ def make_training_sub_policies(CascadeAction, fallback_policy):
             return prioritize_action
 
         lockdown_action = _pick_legal_action(legal_actions, "multi_sector_lockdown")
-        if lockdown_action is not None and pressure >= 0.85 and len(failed_sectors) >= 3 and len(failed_nodes) >= 4:
+        lockdown_pressure_threshold = 0.92 if obs.task_id == "task_hard" else 0.90
+        lockdown_failed_threshold = 5 if obs.task_id == "task_hard" else 4
+        if (
+            lockdown_action is not None
+            and pressure >= lockdown_pressure_threshold
+            and len(failed_sectors) >= 3
+            and len(failed_nodes) >= lockdown_failed_threshold
+            and not recover_legal_exists
+        ):
             return lockdown_action
 
         controlled_candidates = [
@@ -539,9 +599,11 @@ def make_training_sub_policies(CascadeAction, fallback_policy):
         ]
         if (
             controlled_candidates
-            and pressure >= 0.90
+            and pressure >= 0.95
             and len(failed_sectors) >= 3
-            and len(failed_nodes) >= 4
+            and len(failed_nodes) >= 5
+            and not recover_legal_exists
+            and obs.task_id != "task_cyberattack"
         ):
             controlled_candidates.sort(
                 key=lambda a: (
@@ -554,7 +616,7 @@ def make_training_sub_policies(CascadeAction, fallback_policy):
             except Exception:
                 return None
 
-        if pressure >= 0.75:
+        if pressure >= 0.80:
             emergency_action = _pick_legal_action(
                 legal_actions,
                 "emergency_shutdown",
@@ -723,17 +785,27 @@ def evaluate_policy(
 
                 latencies.append(float(elapsed_ms))
                 action_counts[action.action_type] += 1
-                actions_log.append({
-                    "action_type": action.action_type,
-                    "target_node_id": action.target_node_id,
-                })
                 obs = env.step(action)
                 rewards.append(float(obs.reward))
                 meta = obs.metadata or {}
-                if not meta.get("action_valid", True):
-                    invalid_actions += 1
                 parse_failed = bool(policy_meta.get("parse_failed", False))
                 parse_failed = parse_failed or bool(meta.get("parse_error", False))
+
+                actions_log.append({
+                    "step": int(getattr(obs, "step", 0)),
+                    "action_type": action.action_type,
+                    "target_node_id": action.target_node_id,
+                    "reward": float(obs.reward),
+                    "action_valid": bool(meta.get("action_valid", True)),
+                    "invalid_reason": str(meta.get("invalid_reason", "")),
+                    "parse_failed": bool(parse_failed),
+                    "critical_failures": len(obs.diagnostics.critical_failures) if obs.diagnostics else 0,
+                    "budget_remaining": float(getattr(obs, "budget_remaining", 0.0)),
+                    "system_pressure": float(obs.diagnostics.system_pressure) if obs.diagnostics else 0.0,
+                })
+
+                if not meta.get("action_valid", True):
+                    invalid_actions += 1
                 if parse_failed:
                     parse_failures += 1
                 if obs.diagnostics:
@@ -771,6 +843,237 @@ def evaluate_policy(
     return pd.DataFrame(rows)
 
 
+def _is_action_legal_quick(action, legal_actions: List[Dict[str, Any]]) -> bool:
+    if not legal_actions:
+        return True
+    action_params = action.parameters or {}
+    for legal in legal_actions:
+        if legal.get("action_type") != action.action_type:
+            continue
+        if legal.get("target_node_id") != action.target_node_id:
+            continue
+
+        legal_params: Dict[str, Any] = {}
+        nested = legal.get("parameters") or {}
+        if isinstance(nested, dict):
+            legal_params.update(nested)
+        for key in ("source", "target", "node_a", "node_b", "sector_a", "sector_b", "sector"):
+            if key in legal:
+                legal_params[key] = legal[key]
+
+        mismatch = False
+        for key, value in action_params.items():
+            if key in legal_params and legal_params[key] != value:
+                mismatch = True
+                break
+        if not mismatch:
+            return True
+    return False
+
+
+def _reconstruct_observation_from_row(row: Dict[str, Any], CascadeEnvironment, CascadeAction):
+    task_value = str(row.get("task_id", "task_easy"))
+    seed_raw = row.get("seed", 42)
+    try:
+        seed_value = int(seed_raw)
+    except (TypeError, ValueError):
+        seed_value = 42
+
+    env = CascadeEnvironment()
+    obs = env.reset(
+        task_id=task_value,
+        seed=seed_value,
+        scenario_split="train",
+        reward_mode="grpo",
+        training_mode=True,
+    )
+
+    hist_value = row.get("history_json", "[]")
+    try:
+        if isinstance(hist_value, str):
+            history = json.loads(hist_value or "[]")
+        elif isinstance(hist_value, list):
+            history = hist_value
+        else:
+            history = []
+    except Exception:
+        history = []
+
+    for item in history:
+        if not isinstance(item, dict):
+            continue
+        if "action_type" not in item:
+            continue
+        try:
+            obs = env.step(CascadeAction(**item))
+        except Exception:
+            break
+
+    return env, obs
+
+
+def log_parseability_snapshot(
+    label: str,
+    model,
+    tokenizer,
+    rows: List[Dict[str, Any]],
+    args: argparse.Namespace,
+    CascadeEnvironment,
+    CascadeAction,
+    parse_action_from_response,
+) -> None:
+    if not rows:
+        return
+
+    sample_limit = int(max(1, args.debug_parseability_samples))
+    sample_n = min(sample_limit, len(rows))
+    rng = random.Random(2025 + len(rows))
+    indices = list(range(len(rows)))
+    if len(indices) > sample_n:
+        indices = rng.sample(indices, sample_n)
+
+    import torch
+
+    parseable_count = 0
+    wait_count = 0
+    legal_count = 0
+    completion_lengths: List[int] = []
+    records: List[Dict[str, Any]] = []
+
+    for idx in indices:
+        row = rows[idx]
+        prompt = str(row.get("prompt", "")).strip()
+        if not prompt:
+            continue
+
+        env, obs = _reconstruct_observation_from_row(row, CascadeEnvironment, CascadeAction)
+        inputs = tokenizer(
+            prompt,
+            return_tensors="pt",
+            truncation=True,
+            max_length=args.max_seq_len,
+        ).to(model.device)
+
+        with torch.no_grad():
+            output_ids = model.generate(
+                **inputs,
+                max_new_tokens=args.max_completion_len,
+                do_sample=False,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+
+        new_tokens = output_ids[0][inputs["input_ids"].shape[1]:]
+        text = tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+        parseable = _looks_parseable_action(text)
+        action = parse_action_from_response(text, obs)
+        legal_actions = env.get_legal_actions() if hasattr(env, "get_legal_actions") else []
+        legal = _is_action_legal_quick(action, legal_actions)
+
+        parseable_count += int(parseable)
+        wait_count += int(action.action_type == "wait")
+        legal_count += int(legal)
+        completion_lengths.append(len(text))
+
+        records.append({
+            "sample_index": int(idx),
+            "task_id": str(row.get("task_id", "")),
+            "seed": int(row.get("seed", 0)) if str(row.get("seed", "")).isdigit() else row.get("seed"),
+            "parseable": bool(parseable),
+            "action_type": action.action_type,
+            "action_target": action.target_node_id,
+            "action_legal": bool(legal),
+            "completion_chars": len(text),
+            "completion": text,
+        })
+
+    if not records:
+        return
+
+    parseable_rate = parseable_count / max(len(records), 1)
+    wait_rate = wait_count / max(len(records), 1)
+    legal_rate = legal_count / max(len(records), 1)
+    median_chars = int(statistics.median(completion_lengths)) if completion_lengths else 0
+
+    debug_dir = Path(args.output_dir) / "debug"
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    out_path = debug_dir / f"parseability_{label}.json"
+    with out_path.open("w", encoding="utf-8") as fh:
+        json.dump(records, fh, indent=2)
+
+    log.info(
+        "Parseability snapshot [%s]: parseable=%.3f legal=%.3f wait=%.3f median_chars=%d (%s)",
+        label,
+        parseable_rate,
+        legal_rate,
+        wait_rate,
+        median_chars,
+        out_path,
+    )
+
+
+def export_hard_rollout_debug(output_dir: str, eval_df: pd.DataFrame, hard_tasks: Sequence[str]) -> None:
+    if eval_df.empty:
+        return
+
+    hard_set = {str(t) for t in hard_tasks}
+    hard_df = eval_df[eval_df["task_id"].astype(str).isin(hard_set)].copy()
+    if hard_df.empty:
+        return
+
+    debug_dir = Path(output_dir) / "debug"
+    debug_dir.mkdir(parents=True, exist_ok=True)
+
+    episodes_csv = debug_dir / "hard_rollouts_episodes.csv"
+    episodes_json = debug_dir / "hard_rollouts_episodes.json"
+    hard_df.to_csv(episodes_csv, index=False)
+    hard_df.to_json(episodes_json, orient="records", indent=2)
+
+    step_rows: List[Dict[str, Any]] = []
+    for _, row in hard_df.iterrows():
+        actions_payload = row.get("actions", "[]")
+        try:
+            actions = json.loads(actions_payload) if isinstance(actions_payload, str) else actions_payload
+        except Exception:
+            actions = []
+        if not isinstance(actions, list):
+            continue
+
+        for step_entry in actions:
+            if not isinstance(step_entry, dict):
+                continue
+            step_rows.append({
+                "policy": row.get("policy"),
+                "task_id": row.get("task_id"),
+                "seed": row.get("seed"),
+                "episode_score": row.get("score"),
+                "step": step_entry.get("step"),
+                "action_type": step_entry.get("action_type"),
+                "target_node_id": step_entry.get("target_node_id"),
+                "reward": step_entry.get("reward"),
+                "action_valid": step_entry.get("action_valid"),
+                "invalid_reason": step_entry.get("invalid_reason"),
+                "parse_failed": step_entry.get("parse_failed"),
+                "critical_failures": step_entry.get("critical_failures"),
+                "budget_remaining": step_entry.get("budget_remaining"),
+                "system_pressure": step_entry.get("system_pressure"),
+            })
+
+    if step_rows:
+        steps_df = pd.DataFrame(step_rows)
+        steps_csv = debug_dir / "hard_rollouts_steps.csv"
+        steps_json = debug_dir / "hard_rollouts_steps.json"
+        steps_df.to_csv(steps_csv, index=False)
+        steps_df.to_json(steps_json, orient="records", indent=2)
+        log.info(
+            "Hard-rollout debug exported: episodes=%d steps=%d (%s)",
+            len(hard_df),
+            len(step_rows),
+            steps_csv,
+        )
+    else:
+        log.info("Hard-rollout debug exported: episodes=%d (no step entries parsed)", len(hard_df))
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # 7.  TRAINING STATE COLLECTION
 # ══════════════════════════════════════════════════════════════════════════
@@ -783,6 +1086,7 @@ def collect_training_states(
     CascadeEnvironment,
     heuristic_policy,
     make_training_prompt_fn,
+    action_only_prompts: bool,
 ) -> List[dict]:
     rows: List[dict] = []
     EPSILON_EXPLORE = 0.35
@@ -917,7 +1221,12 @@ def collect_training_states(
                     "parameters": action.parameters or {},
                 }
                 rows.append({
-                    "prompt":       make_training_prompt_fn(obs, env=env, grpo_mode=True),
+                    "prompt":       make_training_prompt_fn(
+                        obs,
+                        env=env,
+                        grpo_mode=True,
+                        action_only=action_only_prompts,
+                    ),
                     "task_id":      task_id,
                     "seed":         int(seed),
                     "teacher_policy": teacher_name,
@@ -952,13 +1261,15 @@ def collect_training_states(
 # 8.  GRPO REWARD FUNCTION
 # ══════════════════════════════════════════════════════════════════════════
 
-def make_grpo_reward_fn(CascadeEnvironment, CascadeAction, parse_action_from_response):
+def make_grpo_reward_fn(CascadeEnvironment, CascadeAction, parse_action_from_response, args: Optional[argparse.Namespace] = None):
     """
     Returns a reward function compatible with TRL GRPOTrainer.
     Closed over the cascade_guard symbols so it can be passed directly.
     """
     heuristic_teacher = make_heuristic_policy(CascadeAction)
     teacher_policies = make_training_sub_policies(CascadeAction, heuristic_teacher)
+    reward_call_count = 0
+    reward_stats_every = int(getattr(args, "reward_stats_every", 0)) if args is not None else 0
 
     def _completion_to_text(completion) -> str:
         if isinstance(completion, str):
@@ -1110,6 +1421,8 @@ def make_grpo_reward_fn(CascadeEnvironment, CascadeAction, parse_action_from_res
         **kwargs,
     ) -> List[float]:
         """Teacher-relative GRPO reward with strict parseability pressure."""
+        nonlocal reward_call_count
+        reward_call_count += 1
         rewards: List[float] = []
         n = len(completions)
         task_ids = _ensure_list(task_id, n, "task_easy")
@@ -1168,6 +1481,20 @@ def make_grpo_reward_fn(CascadeEnvironment, CascadeAction, parse_action_from_res
             teacher_next_obs = teacher_env.step(teacher_action)
             agent_meta = agent_next_obs.metadata or {}
 
+            task_name = str(tid)
+            critical_before = (
+                len(agent_obs.diagnostics.critical_failures)
+                if getattr(agent_obs, "diagnostics", None)
+                else 0
+            )
+            critical_after = (
+                len(agent_next_obs.diagnostics.critical_failures)
+                if getattr(agent_next_obs, "diagnostics", None)
+                else 0
+            )
+            failed_before = sum(1 for n in agent_obs.nodes if not n.is_operational)
+            failed_after = sum(1 for n in agent_next_obs.nodes if not n.is_operational)
+
             score_agent = float(agent_env.state.score)
             score_teacher = float(teacher_env.state.score)
             score_delta = score_agent - score_teacher
@@ -1181,14 +1508,14 @@ def make_grpo_reward_fn(CascadeEnvironment, CascadeAction, parse_action_from_res
 
             # Parseability is non-negotiable; unparseable completions receive a large penalty.
             if not parseable:
-                reward -= 1.50
+                reward -= 1.65
 
             if has_action_tag and has_function_call:
                 reward += 0.20
             elif has_json_action:
                 reward += 0.12
             else:
-                reward -= 0.20
+                reward -= 0.28
 
             legal_types = {a["action_type"] for a in agent_legal}
             if not agent_meta.get("action_valid", True):
@@ -1199,11 +1526,11 @@ def make_grpo_reward_fn(CascadeEnvironment, CascadeAction, parse_action_from_res
             if agent_action.action_type == "wait":
                 better = [a for a in agent_legal if a["action_type"] != "wait"]
                 if len(better) >= 4:
-                    reward -= 0.25
+                    reward -= 0.32
                 elif len(better) >= 2:
-                    reward -= 0.18
+                    reward -= 0.24
                 elif len(better) >= 1:
-                    reward -= 0.10
+                    reward -= 0.14
 
             if agent_action.action_type == "recover" and agent_meta.get("action_valid", True):
                 reward += 0.10
@@ -1212,10 +1539,78 @@ def make_grpo_reward_fn(CascadeEnvironment, CascadeAction, parse_action_from_res
             if agent_budget_total > 0:
                 agent_spent = agent_budget_total - float(getattr(agent_env, "_budget", agent_budget_total))
                 teacher_spent = agent_budget_total - float(getattr(teacher_env, "_budget", agent_budget_total))
-                reward += 0.08 * ((agent_spent - teacher_spent) / agent_budget_total)
-                reward += 0.05 * min(agent_spent / (0.5 * agent_budget_total), 1.0)
+
+                spent_frac = agent_spent / agent_budget_total
+                teacher_spent_frac = teacher_spent / agent_budget_total
+                spent_delta = (agent_spent - teacher_spent) / agent_budget_total
+
+                budget_delta_weight = 0.10
+                utilization_weight = 0.06
+                if task_name in {"task_surge_demand", "task_cyberattack", "task_hard"}:
+                    budget_delta_weight = 0.24
+                    utilization_weight = 0.12
+                elif task_name == "task_gen_blackout":
+                    budget_delta_weight = 0.18
+                    utilization_weight = 0.10
+                elif task_name == "task_easy":
+                    budget_delta_weight = 0.05
+                    utilization_weight = 0.03
+
+                reward += budget_delta_weight * spent_delta
+
+                util_denom = 0.60 if task_name in {"task_surge_demand", "task_cyberattack", "task_hard", "task_gen_blackout"} else 0.45
+                reward += utilization_weight * min(spent_frac / max(util_denom, 1e-6), 1.0)
+
+                # Penalize severe under-spend when the teacher must spend to protect score.
+                if teacher_spent_frac >= 0.35 and spent_frac < teacher_spent_frac * 0.70:
+                    under_ratio = (teacher_spent_frac - spent_frac) / max(teacher_spent_frac, 1e-6)
+                    reward -= 0.24 * min(under_ratio, 1.5)
+
+                # Penalize overspending past a bounded margin over teacher spend.
+                allowed_spend = min(teacher_spent_frac + (0.12 if task_name != "task_easy" else 0.08), 0.92)
+                if spent_frac > allowed_spend:
+                    overspend_ratio = (spent_frac - allowed_spend) / max(1.0 - allowed_spend, 1e-6)
+                    reward -= 0.28 * min(overspend_ratio, 1.5)
+
+            # Task-specific shaping hooks.
+            if task_name == "task_surge_demand":
+                if critical_after < critical_before:
+                    reward += 0.22
+                if failed_after < failed_before:
+                    reward += 0.10
+                if agent_action.action_type in {"request_mutual_aid", "deploy_repair_crew", "prioritize", "reroute"}:
+                    reward += 0.08
+                if agent_action.action_type == "wait" and critical_before > 0:
+                    reward -= 0.26
+
+            if task_name == "task_easy":
+                if agent_action.action_type in {"multi_sector_lockdown", "controlled_cascade", "emergency_shutdown"}:
+                    reward -= 0.20
+                if critical_after <= critical_before and agent_meta.get("action_valid", True):
+                    reward += 0.05
+
+            if task_name in {"task_hard", "task_gen_blackout", "task_cyberattack"}:
+                if agent_action.action_type in {"reroute", "cross_sector_bridge"} and critical_after < critical_before:
+                    reward += 0.12
+                if task_name == "task_cyberattack" and agent_action.action_type == "patch_scada":
+                    reward += 0.16
+                if task_name in {"task_hard", "task_gen_blackout"} and agent_action.action_type == "deploy_repair_crew":
+                    reward += 0.08
 
             rewards.append(float(max(-4.0, min(4.0, reward))))
+
+        if reward_stats_every > 0 and rewards and (reward_call_count % reward_stats_every == 0):
+            pre_mu = statistics.mean(rewards)
+            pre_sd = statistics.pstdev(rewards) if len(rewards) > 1 else 0.0
+            log.info(
+                "Reward stats (pre-normalize): call=%d n=%d mean=%.4f std=%.4f min=%.4f max=%.4f",
+                reward_call_count,
+                len(rewards),
+                pre_mu,
+                pre_sd,
+                min(rewards),
+                max(rewards),
+            )
 
         # ── Group-normalise (GRPO baseline subtraction) ───────────────
         if len(rewards) >= 2:
@@ -1383,10 +1778,13 @@ def run_training(
         max_steps=args.steps,
         learning_rate=args.lr,
         per_device_train_batch_size=args.generations,
-        gradient_accumulation_steps=1,
+        gradient_accumulation_steps=2,
         num_generations=args.generations,
         max_completion_length=args.max_completion_len,
-        temperature=0.7,
+        temperature=0.55,
+        warmup_ratio=0.08,
+        lr_scheduler_type="cosine",
+        max_grad_norm=0.30,
         logging_steps=1,
         save_steps=max(args.steps, 1),
         report_to="none",
@@ -1481,12 +1879,17 @@ def run_evaluation(
     model, tokenizer, args,
     eval_tasks, heuristic_policy,
     make_training_prompt_fn, parse_action_from_response,
-    CascadeEnvironment, TASK_CONFIGS, TASK_SEED_SPLITS,
+    CascadeEnvironment, CascadeAction, TASK_CONFIGS, TASK_SEED_SPLITS,
 ):
     import torch
 
     def grpo_policy(obs, env=None):
-        prompt = make_training_prompt_fn(obs, env=env, grpo_mode=True)
+        prompt = make_training_prompt_fn(
+            obs,
+            env=env,
+            grpo_mode=True,
+            action_only=args.action_only_prompts,
+        )
         inputs  = tokenizer(
             prompt, return_tensors="pt", truncation=True,
             max_length=args.max_seq_len,
@@ -1516,6 +1919,44 @@ def run_evaluation(
         "grpo_local", grpo_policy, eval_tasks, args.eval_seeds,
         CascadeEnvironment, TASK_CONFIGS, TASK_SEED_SPLITS,
     )
+
+    if args.debug_hard_rollouts:
+        hard_tasks = [
+            t for t in eval_tasks
+            if t in {"task_gen_blackout", "task_hard", "task_cyberattack"}
+        ]
+        if hard_tasks:
+            debug_frames = [heuristic_df, grpo_df]
+            debug_seeds = max(1, min(args.debug_hard_rollout_seeds, args.eval_seeds))
+            teacher_policies = make_training_sub_policies(CascadeAction, heuristic_policy)
+
+            for policy_name in ("advanced_crisis_manager", "proactive_hardener"):
+                teacher_policy = teacher_policies.get(policy_name)
+                if teacher_policy is None:
+                    continue
+
+                def _teacher_policy(obs, env=None, _policy=teacher_policy):
+                    legal_actions = env.get_legal_actions() if env is not None and hasattr(env, "get_legal_actions") else None
+                    try:
+                        return _policy(obs, legal_actions)
+                    except TypeError:
+                        return _policy(obs)
+
+                teacher_df = evaluate_policy(
+                    policy_name,
+                    _teacher_policy,
+                    hard_tasks,
+                    debug_seeds,
+                    CascadeEnvironment,
+                    TASK_CONFIGS,
+                    TASK_SEED_SPLITS,
+                )
+                debug_frames.append(teacher_df)
+
+            debug_eval_df = pd.concat(debug_frames, ignore_index=True)
+            export_hard_rollout_debug(args.output_dir, debug_eval_df, hard_tasks)
+        else:
+            log.info("Hard-rollout debug enabled but no hard tasks are present in eval task list.")
 
     all_results = pd.concat([heuristic_df, grpo_df], ignore_index=True)
     summary = (
@@ -1676,6 +2117,7 @@ def main():
         CascadeEnvironment=CascadeEnvironment,
         heuristic_policy=heuristic_policy,
         make_training_prompt_fn=make_training_prompt_fn,
+        action_only_prompts=args.action_only_prompts,
     )
 
     from datasets import Dataset
@@ -1684,7 +2126,10 @@ def main():
 
     # ── Build reward function ──────────────────────────────────────────
     reward_fn = make_grpo_reward_fn(
-        CascadeEnvironment, CascadeAction, parse_action_from_response
+        CascadeEnvironment,
+        CascadeAction,
+        parse_action_from_response,
+        args=args,
     )
 
     # ── Reward smoke test ──────────────────────────────────────────────
@@ -1714,6 +2159,18 @@ def main():
     # ── Optional SFT warm-start ───────────────────────────────────────
     run_sft_warmstart(model=model, tokenizer=tokenizer, train_rows=rows, args=args)
 
+    if args.debug_parseability:
+        log_parseability_snapshot(
+            label="pre_grpo",
+            model=model,
+            tokenizer=tokenizer,
+            rows=rows,
+            args=args,
+            CascadeEnvironment=CascadeEnvironment,
+            CascadeAction=CascadeAction,
+            parse_action_from_response=parse_action_from_response,
+        )
+
     # ── Train ──────────────────────────────────────────────────────────
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     run_training(
@@ -1727,6 +2184,18 @@ def main():
         torch_dtype=torch_dtype,
     )
 
+    if args.debug_parseability:
+        log_parseability_snapshot(
+            label="post_grpo",
+            model=model,
+            tokenizer=tokenizer,
+            rows=rows,
+            args=args,
+            CascadeEnvironment=CascadeEnvironment,
+            CascadeAction=CascadeAction,
+            parse_action_from_response=parse_action_from_response,
+        )
+
     # ── Evaluate ───────────────────────────────────────────────────────
     if not args.no_eval:
         run_evaluation(
@@ -1738,6 +2207,7 @@ def main():
             make_training_prompt_fn=make_training_prompt_fn,
             parse_action_from_response=parse_action_from_response,
             CascadeEnvironment=CascadeEnvironment,
+            CascadeAction=CascadeAction,
             TASK_CONFIGS=TASK_CONFIGS,
             TASK_SEED_SPLITS=TASK_SEED_SPLITS,
         )

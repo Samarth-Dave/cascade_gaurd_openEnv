@@ -179,8 +179,35 @@ Tier 3/4 hints (use only when situation demands it):
 """
 
 
-def build_system_prompt(grpo_mode: bool = False) -> str:
-    """Return the system prompt. Use grpo_mode=True for training (stricter format)."""
+SYSTEM_PROMPT_GRPO_ACTION_ONLY = """\
+You are an AI coordinator for critical infrastructure (power, water, hospital, telecom).
+Choose exactly one valid action for the current step.
+
+Hard constraints:
+- Do NOT output chain-of-thought.
+- Do NOT output explanations, markdown, bullets, or extra text.
+- Output exactly one line and nothing else.
+- The one line MUST be exactly one action tag:
+  <action>ACTION_TYPE(TARGET_OR_null)</action>
+
+Use only legal action types:
+harden, recover, isolate, shed_load, coordinate, wait,
+reroute, prioritize, deploy_repair_crew, emergency_shutdown,
+cross_sector_bridge, patch_scada, redistribute_load,
+request_mutual_aid, controlled_cascade, multi_sector_lockdown
+
+Examples of valid one-line outputs:
+<action>recover(POWER_GEN_1)</action>
+<action>patch_scada(TELECOM_SWITCH_1)</action>
+<action>cross_sector_bridge(telecom,hospital)</action>
+<action>wait(null)</action>
+"""
+
+
+def build_system_prompt(grpo_mode: bool = False, action_only: bool = False) -> str:
+    """Return the system prompt. action_only applies to GRPO mode only."""
+    if grpo_mode and action_only:
+        return SYSTEM_PROMPT_GRPO_ACTION_ONLY
     return SYSTEM_PROMPT_GRPO if grpo_mode else SYSTEM_PROMPT
 
 
@@ -361,7 +388,12 @@ def _summarize_legal_actions(legal_actions: list[dict], max_examples: int = 30) 
     return legal_summary
 
 
-def make_training_prompt(obs: "CascadeObservation", env=None, grpo_mode: bool = True) -> str:
+def make_training_prompt(
+    obs: "CascadeObservation",
+    env=None,
+    grpo_mode: bool = True,
+    action_only: bool = False,
+) -> str:
     """
     Build a full training prompt including system + user + legal action list.
 
@@ -373,8 +405,13 @@ def make_training_prompt(obs: "CascadeObservation", env=None, grpo_mode: bool = 
         grpo_mode = env
         env = None
 
-    system = build_system_prompt(grpo_mode=grpo_mode)
+    system = build_system_prompt(grpo_mode=grpo_mode, action_only=action_only)
     user   = build_user_prompt(obs)
+    if grpo_mode and action_only:
+        user += (
+            "\n\nSTRICT OUTPUT CONTRACT: Output exactly one line with a single "
+            "<action>...</action> tag and no extra text."
+        )
 
     legal = []
     if env is not None and hasattr(env, "get_legal_actions"):
