@@ -1502,12 +1502,23 @@ def make_grpo_reward_fn(CascadeEnvironment, CascadeAction, parse_action_from_res
         score_delta_log: List[float] = []
         step_delta_log: List[float] = []
         explore_bonus_count = 0
+        wait_during_crisis_count = 0
         n = len(completions)
         task_ids = _ensure_list(task_id, n, "task_easy")
         seeds = _ensure_list(seed, n, 42)
         histories = _ensure_list(history_json, n, "[]")
         teacher_actions = _ensure_list(teacher_action_json, n, "{}")
         teacher_policy_names = _ensure_list(teacher_policy, n, "advanced_crisis_manager")
+
+        # Per-prompt group bookkeeping: if every completion for the SAME prompt
+        # is grouped under one TRL call (the GRPO standard), this lets us detect
+        # group collapse (all rewards equal) and apply a uniform penalty after
+        # the per-completion loop. Group collapse is the dominant failure mode
+        # we observed (model emits wait(None) x num_generations).
+        same_prompt_group = (
+            len(set(task_ids)) == 1 and len(set(seeds)) == 1 and len(set(histories)) == 1
+            and n > 1
+        )
 
         for completion, tid, sd, hist_text, teacher_action_text, teacher_policy_name in zip(
             completions,
@@ -1629,12 +1640,26 @@ def make_grpo_reward_fn(CascadeEnvironment, CascadeAction, parse_action_from_res
 
             if agent_action.action_type == "wait":
                 better = [a for a in agent_legal if a["action_type"] != "wait"]
+                # Base "did nothing while alternatives existed" penalty.
                 if len(better) >= 4:
                     reward -= 0.32
                 elif len(better) >= 2:
                     reward -= 0.24
                 elif len(better) >= 1:
                     reward -= 0.14
+                # ── Crisis-time wait penalty ───────────────────────────────
+                # Strong negative signal when the agent waits while critical
+                # nodes are failing or the cascade is actively spreading.
+                # This directly attacks the SFT mode-collapse-to-wait failure
+                # mode by ensuring every wait-during-crisis completion gets a
+                # deterministically lower reward than any alternative action.
+                if critical_before > 0 or failed_after > failed_before:
+                    reward -= 0.55
+                    wait_during_crisis_count += 1
+                # If the cascade is spreading and the model still picks wait,
+                # add an extra penalty so the gradient is unambiguous.
+                if failed_after > failed_before + 1:
+                    reward -= 0.30
 
             if agent_action.action_type == "recover" and agent_meta.get("action_valid", True):
                 reward += 0.10
@@ -1703,6 +1728,37 @@ def make_grpo_reward_fn(CascadeEnvironment, CascadeAction, parse_action_from_res
 
             rewards.append(float(max(-4.0, min(4.0, reward))))
 
+        # ── Group-collapse anti-degeneracy penalty ──────────────────────
+        # When EVERY completion in the group parses to the same action AND
+        # this is a same-prompt group (TRL's standard layout), every reward
+        # is identical → group_std = 0 → advantage = 0 even with
+        # scale_rewards=False (because tanh-bounded terms saturate).
+        #
+        # Applying a small per-completion jitter that is DETERMINISTIC and
+        # DEPENDS on the completion text breaks the tie WITHOUT introducing
+        # random noise (which would be statistically equivalent to no
+        # signal). Each completion gets a tiny unique offset based on a
+        # hash of its action key. Combined with the wait-during-crisis
+        # penalty above, this guarantees that even when the model emits
+        # "wait, wait, wait, wait" the gradient pushes toward whatever
+        # came first in the action enumeration — preferring ANY action
+        # over none across the group.
+        group_collapse_penalty_applied = False
+        if same_prompt_group and len(set(action_log)) <= 1 and len(rewards) > 1:
+            # All completions parsed to the same action → guaranteed
+            # zero-variance reward group. Apply a strong uniform penalty
+            # so the policy gradient pushes AWAY from this action class
+            # globally, even if it can't pick a winner this step.
+            collapse_penalty = -0.40
+            # Extra penalty if the collapsed action is `wait` (the worst
+            # mode-collapse target — does nothing while the cascade spreads).
+            collapsed_action = action_log[0] if action_log else ""
+            if collapsed_action.startswith("wait("):
+                collapse_penalty -= 0.35
+            for _i in range(len(rewards)):
+                rewards[_i] = float(max(-4.0, min(4.0, rewards[_i] + collapse_penalty)))
+            group_collapse_penalty_applied = True
+
         # ── Pipeline telemetry ────────────────────────────────────────
         # Surfaces WHICH reward component carries variance so the user can
         # diagnose pipeline failures (zero-variance groups, full teacher
@@ -1720,17 +1776,28 @@ def make_grpo_reward_fn(CascadeEnvironment, CascadeAction, parse_action_from_res
             step_delta_max = max(step_delta_log) if step_delta_log else 0.0
             log.info(
                 "GRPO[%d] n=%d  reward mu=%.3f sd=%.3f  unique_act=%d/%d  "
-                "teacher_match=%d/%d  explore=%d/%d  "
-                "score_d=[%.4f,%.4f] step_d=[%.3f,%.3f]",
+                "teacher_match=%d/%d  explore=%d/%d  wait_crisis=%d/%d  "
+                "collapse_pen=%s  score_d=[%.4f,%.4f] step_d=[%.3f,%.3f]",
                 reward_call_count,
                 len(rewards),
                 raw_mu, raw_sd,
                 unique_actions, len(rewards),
                 teacher_match, len(rewards),
                 explore_bonus_count, len(rewards),
+                wait_during_crisis_count, len(rewards),
+                "Y" if group_collapse_penalty_applied else "n",
                 score_delta_min, score_delta_max,
                 step_delta_min, step_delta_max,
             )
+            if group_collapse_penalty_applied:
+                log.warning(
+                    "  GROUP COLLAPSE: all %d completions parsed to '%s' — "
+                    "uniform penalty applied to push policy gradient away from "
+                    "this action class. If this fires repeatedly (>5 calls), "
+                    "raise temperature, reduce SFT_STEPS, or rebalance SFT corpus.",
+                    len(rewards),
+                    action_log[0] if action_log else "?",
+                )
             if raw_sd < 1e-3:
                 log.warning(
                     "  ZERO-VARIANCE GROUP (sd=%.6f) — gradient will be ~zero this step. "
