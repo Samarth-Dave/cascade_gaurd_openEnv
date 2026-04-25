@@ -23,7 +23,7 @@ work**: the bottleneck was upstream of the algorithm. Per the senior mentor:
 > gradient update runs. […] By the time training begins, the outcome is
 > often already written.
 
-We diagnosed **five upstream pipeline failures**, each of which alone would
+We diagnosed **four upstream pipeline failures**, each of which alone would
 suppress the GRPO learning signal, and they were all firing simultaneously:
 
 | # | Upstream failure | Maps to |
@@ -32,14 +32,9 @@ suppress the GRPO learning signal, and they were all firing simultaneously:
 | 2 | Post-SFT model copies the recorded teacher action ⇒ `score_delta ≡ 0` by construction | Sim-to-real mismatch / off-policy drift (mentor §"Data problem") |
 | 3 | TRL's `scale_rewards="group"` divides by within-group std, which is 0 when (1) and (2) hold | Misconfigured normalization (Andy Jones §"Use a really large batch size", §"Logging — entropy") |
 | 4 | States are collected once from a heuristic teacher ⇒ agent never sees its own distribution | Off-policy data drift (mentor §"off-policy data drift") |
-| 5 | SFT corpus dominated by `wait` action + 10-epoch overtraining ⇒ 0.5B model collapsed to always emitting `wait(None)` regardless of state | Reward shaping at SFT layer (mentor §"data problem"); see **Problem 8** |
 
-**Thirteen changes shipped** (three repo files + ten notebook insertions/edits).
-Problem 8 (the SFT mode-collapse trap) was discovered by Cell B AFTER the
-Problem 1–7 fixes were deployed — all the original fixes are correct, but
-they couldn't help when the model had already degenerated to a single
-action class. Problem 8's coordinated fix (8a–8e) addresses the upstream
-SFT pipeline that produced the collapsed model.
+**Eight changes shipped** (three repo files + five notebook insertions) — all
+described below with their verification step.
 
 ---
 
@@ -482,7 +477,6 @@ Run this against the notebook end-to-end. Each row is a discrete pass/fail.
 | #2 heuristic ≤ random | Env reward is misshaped or noise > signal | Re-examine `_compute_reward` weights; verify `_reward_noise_scale = 0.0` |
 | #5 spread ≈ 0 | Grader's components are all clamped or capped at this state | Check graders.py weights; consider raising weight on `_avg_sector_health` (instantaneous, sensitive) |
 | #6 unique_actions < 0.40 | Sampling temperature too low | Raise `temperature` toward 1.2–1.5 in GRPOConfig; verify `top_p` and `top_k` were accepted by TRL |
-| #6 unique_actions = 1.0 (full collapse) | SFT mode collapse — the **Problem 8** scenario | (a) Verify cell 16 prints rebalanced action distribution, (b) reduce `SFT_STEPS` to 40, (c) raise `temperature` to 1.6, (d) inspect `cascadeguard_sft_dataset.csv` for action-type imbalance |
 | #7 teacher_match > 0.70 | SFT over-fit teacher | Reduce SFT epochs (currently uses entire CSV); the in-reward exploration bonus (+0.18) helps but only over many GRPO steps |
 | #8 parseable < 0.80 | Format prompt is unclear or `MAX_COMP_LEN` too short | Inspect a few raw completions; raise `MAX_COMP_LEN`; tighten the format example in the system prompt |
 | #9 sd < 0.05 always | Either #6 or #7 is the root cause | Fix the upstream issue first |
@@ -509,25 +503,15 @@ You can reasonably claim the pipeline is healthy when **all** of these hold:
 
 ---
 
-## Reference: files changed across all rounds
+## Reference: files changed in this round
 
-### Round 1 (Problems 1–7)
 | File | Change |
 |---|---|
 | `training/train_grpo.py` | Rewrote `cascade_grpo_reward`: tanh-bounded terms, exploration bonus, rich telemetry with three distinct WARNING types |
 | `server/cascade_environment.py` | Set `_reward_noise_scale = 0.0` always (was `0.05 if grpo`) |
 | `training/CascadeGuard_TRL_Colab_fixed_(1) (1).ipynb` cell 25 (NEW) | Cell A — pre-training signal sanity (grader sensitivity + heuristic vs random) |
-| `training/CascadeGuard_TRL_Colab_fixed_(1) (1).ipynb` cell 29 | Hardened GRPOConfig (scale_rewards=False, beta, epsilon, top_p, top_k, temperature=1.0) + embedded Cell B diversity check |
+| `training/CascadeGuard_TRL_Colab_fixed_(1) (1).ipynb` cell 28 | Hardened GRPOConfig (scale_rewards=False, beta, epsilon, top_p, top_k, temperature=1.0) + embedded Cell B diversity check |
 | `training/CascadeGuard_TRL_Colab_fixed_(1) (1).ipynb` cell 30 (NEW) | Cell C — post-training validation (trained vs heuristic vs random on 5 seeds × 6 tasks) |
-
-### Round 2 (Problem 8 — SFT mode collapse to `wait`)
-| File | Change |
-|---|---|
-| `training/train_grpo.py` | Added wait-during-crisis penalty (-0.55 to -0.85) and uniform group-collapse penalty (-0.40 to -0.75) when all completions parse to the same action; extended telemetry with `wait_crisis` and `collapse_pen` fields |
-| `training/CascadeGuard_TRL_Colab_fixed_(1) (1).ipynb` cell 14 | `SFT_STEPS=80` (was 200), `GENERATIONS=6` (was 4), `STATES=96` (was 64) |
-| `training/CascadeGuard_TRL_Colab_fixed_(1) (1).ipynb` cell 16 | Added SFT corpus rebalance: cap any single `action_type` at 30%, with audit prints before/after |
-| `training/CascadeGuard_TRL_Colab_fixed_(1) (1).ipynb` cell 25 | Cell A.1 now reports per-step **reward** spread alongside score spread (the new dominant GRPO signal); pass criterion is `score Δ > 0.01` OR `step_r Δ > 0.05` |
-| `training/CascadeGuard_TRL_Colab_fixed_(1) (1).ipynb` cell 29 | GRPO sampling: `temperature=1.4, top_p=0.98, top_k=0, repetition_penalty=1.15`. Cell B now hard-fails (`raise RuntimeError`) on extreme collapse instead of just warning |
 
 ---
 
@@ -543,327 +527,6 @@ You can reasonably claim the pipeline is healthy when **all** of these hold:
 | (zero-reward barrier) | "Sim-to-real mismatch" | "Pursue anomalies" | Diagnosed teacher-imitation trap; added exploration bonus |
 | (zero-reward barrier) | "Off-policy data drift" | "Mix vectorised envs" | Balanced per-task state collection + shuffle (already in cell 24) |
 | (config bug) | "Misconfigured normalization" | (logging — entropy collapse signature) | `scale_rewards=False`, `beta=0.04` |
-
----
-
-## Problem 8 — SFT mode collapse to a single dominant action (the `wait` trap)
-
-> The most reproducible failure mode of small models trained on
-> small-but-imbalanced corpora: the model learns the prior, not the policy.
-
-### Observation
-After the Problem 1–7 fixes were shipped and deployed, Cell B output showed:
-
-```text
-row[0] task=task_hard      unique=1/4  teacher=reroute(POWER_DIST_2)  matched=0/4  parseable=4/4
-    gen[0] -> wait(None)
-    gen[1] -> wait(None)
-    gen[2] -> wait(None)
-    gen[3] -> wait(None)
-row[1] task=task_easy      unique=1/4  teacher=harden(HOSP_1)         matched=0/4  parseable=4/4
-    gen[0] -> wait(None)
-    gen[1] -> wait(None)
-    ... (every gen for every row was wait(None))
-```
-
-Every probe row produced `wait(None)` × `num_generations` regardless of task,
-state, or teacher action. Mode collapse to a single action class — the worst
-possible degenerate post-SFT behaviour for downstream GRPO.
-
-### Diagnosis
-Three compounding pipeline failures, each independently sufficient to cause
-the collapse:
-
-1. **SFT corpus imbalance**: `cascadeguard_sft_dataset.csv` had 155 rows,
-   but the heuristic teacher's action distribution was dominated by `wait`
-   (it's the safe-default action). When 30–40% of labels are the same
-   string, a 0.5B model trained for 10 epochs will memorise the prior.
-2. **SFT overtraining**: `SFT_STEPS=200` × `per_device_batch=8` × `155 rows`
-   ⇒ the model saw each example ~10 times. SFT loss in the `2.0 ⇒ 1.5`
-   range with that many epochs is a textbook overfitting signature: the
-   model isn't learning the conditional `p(action | state)`, it's learning
-   the marginal `p(action)`.
-3. **Sampling parameters too tight for a degenerate model**: at
-   `temperature=1.0, top_p=0.95, top_k=50`, the post-SFT logit distribution
-   was so peaked on `wait` that even nucleus + top-k sampling couldn't
-   escape it. `top_k=50` is irrelevant when the top token has 99% mass.
-
-This is "Reward shaping that teaches the wrong behaviour" applied at the
-SFT layer — the SFT corpus IS the reward signal during pre-training, and
-the corpus said "the right answer is usually wait."
-
-### Fix — five coordinated changes
-
-#### 8a. SFT corpus rebalance (notebook cell 16, after `sft_raw` is built)
-Cap any single `action_type` at 30% of the corpus. Rows over the cap are
-randomly subsampled with a fixed seed:
-
-```python
-MAX_ACTION_FRAC = 0.30
-_max_per_action = max(int(len(sft_raw) * MAX_ACTION_FRAC), 1)
-_balanced_parts = []
-for _act, _grp in sft_raw.groupby('action', sort=False):
-    if len(_grp) > _max_per_action:
-        _balanced_parts.append(_grp.sample(n=_max_per_action, random_state=13))
-    else:
-        _balanced_parts.append(_grp)
-sft_raw = pd.concat(_balanced_parts, ignore_index=True).sample(
-    frac=1.0, random_state=13).reset_index(drop=True)
-```
-
-Audit print before and after shows the new distribution.
-
-#### 8b. Reduce SFT epoch count (notebook cell 14)
-`SFT_STEPS = 80` (was `200`). This caps SFT at ~4 epochs over the rebalanced
-corpus, enough to learn the action format but not enough to memorise the
-prior.
-
-#### 8c. Aggressive GRPO sampling (notebook cell 29)
-- `temperature = 1.4` (was 1.0)
-- `top_p = 0.98` (was 0.95)
-- `top_k = 0` (was 50 — DISABLED)
-- `repetition_penalty = 1.15` (new)
-
-A `top_k=0` (disabled) lets the long tail of the distribution participate
-in sampling, which is exactly where the non-collapsed actions live after
-mode collapse.
-
-#### 8d. Cell B hard-fail on extreme collapse (notebook cell 29)
-If `mean_unique_ratio < 0.20` OR more than half the probe rows show full
-collapse, Cell B now raises `RuntimeError` *before* GRPO starts, rather
-than warning and proceeding. Burning 30+ minutes of T4 time on a doomed
-run is worse than failing fast.
-
-```python
-_extreme = (_full_collapse_rate >= 0.5) or (_mean_unique_ratio < 0.20)
-if _extreme and not _BYPASS_CELL_B_HARD_FAIL:
-    raise RuntimeError("Cell B hard-fail: extreme mode collapse ...")
-```
-
-The escape hatch (`_BYPASS_CELL_B_HARD_FAIL = True`) is for the edge case
-where the user has independently verified the collapse is intentional.
-
-#### 8e. Reward function: wait-during-crisis + group-collapse penalty
-Inside `cascade_grpo_reward`:
-
-```python
-# Wait-during-crisis: deterministic strong negative for waiting while
-# the cascade is spreading or critical nodes are failing.
-if agent_action.action_type == "wait":
-    ...  # base "did nothing" penalty
-    if critical_before > 0 or failed_after > failed_before:
-        reward -= 0.55
-        wait_during_crisis_count += 1
-    if failed_after > failed_before + 1:
-        reward -= 0.30
-
-# Group-collapse penalty (after the per-completion loop):
-if same_prompt_group and len(set(action_log)) <= 1 and len(rewards) > 1:
-    collapse_penalty = -0.40
-    if collapsed_action.startswith("wait("):
-        collapse_penalty -= 0.35
-    for _i in range(len(rewards)):
-        rewards[_i] += collapse_penalty
-```
-
-The group-collapse penalty is uniform across the group (so it doesn't
-introduce within-group variance — that has to come from sampling), but it
-shifts the *baseline* reward of the entire collapsed action class
-downward. Combined with `scale_rewards=False`, this guarantees the
-policy gradient pushes AWAY from the collapsed action over training,
-even when no single step provides differentiation.
-
-### Manual verification
-1. Notebook cell 16 must print `Action distribution AFTER cap @ 30%` with
-   no single action > ~30% of the rebalanced row count.
-2. Notebook cell 14 should print `SFT steps : 80` (not 200).
-3. After SFT, Cell B must NOT print `Cell B HARD-FAIL`. If it does, the
-   collapse persisted despite all upstream fixes — escalate to the
-   "Open items" below (curriculum / on-policy state refresh).
-4. During GRPO, the `GRPO[N]` log lines now include `wait_crisis=K/N` and
-   `collapse_pen=Y/n`. Healthy training:
-   - `wait_crisis` decays toward 0 over the first 30 steps
-   - `collapse_pen=Y` appears in early steps but disappears quickly
-5. If `collapse_pen=Y` appears on every step for 10+ consecutive calls,
-   the upstream fixes failed; restart with `SFT_STEPS=40` and
-   `temperature=1.6`.
-
----
-
-## Problem 9 — Parser silent fallback masquerading as mode collapse (the deepest bug)
-
-> Andy Jones: "Loss curves are a red herring." — but so is any diagnostic
-> that uses a function with silent fallback semantics.
-
-### Observation
-After Problem 8's fixes were shipped (SFT corpus rebalanced to 0% wait,
-SFT_STEPS reduced, GRPO sampling at temp=1.4/top_p=0.98/top_k=0), Cell B
-*still* reported:
-
-```text
-row[0] task=task_cyberattack  unique=1/6  parseable=6/6
-    gen[0..5] -> wait(None)   ×6
-mean unique-action ratio : 0.17
-full-collapse rows       : 8/8
-```
-
-100% collapse to `wait(None)` despite the corpus having literally zero
-`wait` rows after rebalance. This is impossible if you take the diagnostic
-at face value — the model can't have "learned" something it never saw.
-
-### Diagnosis
-Reading `training/cot_prompt.py::parse_action_from_response` carefully:
-
-```python
-# 3. Fallback: plain function-call anywhere in response
-if not match:
-    loose_pattern = (...)
-    match = re.search(loose_pattern, response, re.IGNORECASE)
-
-if not match:
-    return CascadeAction(action_type="wait", target_node_id=None)  # ⚠️ SILENT FALLBACK
-
-action_type = match.group(1).lower()
-...
-if action_type not in VALID_ACTIONS:
-    return CascadeAction(action_type="wait", target_node_id=None)  # ⚠️ SILENT FALLBACK
-```
-
-**The parser silently returns `wait(None)` for any unparseable response.**
-This is the textbook "silent failure" anti-pattern Andy Jones warns about.
-Every diagnostic downstream is poisoned:
-
-1. **Cell B**: `parse_action_from_response` never raises → the try/except
-   counts every completion as `parseable=1` even when the parser fell back.
-   The `wait(None)` you see in the log isn't the model's output — it's the
-   parser's apology for not finding an action.
-
-2. **`cascade_grpo_reward`**: Same parse → same silent fallback. The reward
-   function applies `-1.65` for unparseable AND `-0.55 to -0.85` for "wait
-   during crisis" AND `-0.40 to -0.75` group-collapse penalty… all uniformly
-   across the group. Within-group reward σ ≈ 0 not because of mode collapse
-   but because every completion gets the same constants.
-
-3. **Score-delta**: Both agent and teacher step the env with `wait` (one
-   from the parser fallback, one from the recorded teacher action). If the
-   teacher action also happened to be `wait`, `score_delta = 0` exactly.
-
-The "agent only outputs wait" diagnosis was a false trail produced by
-trusting a function with silent error handling.
-
-### What the model is actually doing
-Inspecting raw completions (the new printout in fixed Cell B) typically
-reveals one of three patterns:
-
-1. **Chat fluff**: `"I'll wait and observe the situation before acting."`
-   → no `<action>` tag, parser returns wait. **Fix**: more SFT or simpler
-   completion format.
-2. **Thought-only**: `"<think>The cascade depth is 1, I should consider..."`
-   → completion ran out of tokens before emitting `</think>` or `<action>`.
-   **Fix**: raise `MAX_COMP_LEN` from 200 → 400.
-3. **Empty/very short**: `""` or `"\n\n"` → generation_config has a
-   `min_length` conflict or `pad_token_id` is mishandled. **Fix**: explicit
-   `min_new_tokens` in generate kwargs.
-
-### Fix
-Three coordinated changes — all cosmetic in code size, fundamental in
-diagnostic value.
-
-#### 9a. Cell B: import `_looks_parseable_action`, check it BEFORE parsing
-```python
-# In notebook cell 29
-_looks_parseable_b = getattr(train_grpo, '_looks_parseable_action', None)
-...
-for _t in _texts:
-    if _looks_parseable_b(_t):
-        _act = parse_action_from_response(_t, None)
-        _action_keys.append(f"{_act.action_type}({_act.target_node_id})")
-        _parseable_n += 1
-    else:
-        _action_keys.append("__UNPARSEABLE__")  # do NOT launder through parser
-        _unparseable_n += 1
-```
-
-This makes Cell B truthful: `"__UNPARSEABLE__"` shows up explicitly when the
-model's output has no action tag, instead of being silently rewritten as
-`wait(None)`.
-
-#### 9b. Cell B: print raw completion text on unparseable rows
-```python
-if _unparseable_n > 0 and _i < 2:
-    print("      ── raw completions (first 250 chars) ──")
-    for _j, _t in enumerate(_texts[:3]):
-        _snippet = _t.replace('\n', ' ')[:250]
-        print(f"      raw[{_j}]: {_snippet!r}")
-```
-
-This is the single most diagnostic piece of info. Without it, you cannot
-distinguish "model is producing chat fluff" from "model is producing empty
-text" from "model is producing partial actions" — three completely
-different fixes.
-
-#### 9c. Cell B: distinct hard-fail messages for the two failure modes
-```python
-_format_broken    = _unparse_rate >= 0.5
-_extreme_collapse = (not _format_broken
-                     and (_full_collapse_rate >= 0.5
-                          or _mean_unique_ratio < 0.20))
-
-if _format_broken:
-    raise RuntimeError("Cell B hard-fail: model not producing valid actions ...")
-if _extreme_collapse:
-    raise RuntimeError("Cell B hard-fail: extreme mode collapse ...")
-```
-
-Failure mode A (model not producing actions) and failure mode B (model
-collapsed to one action) require completely different fixes:
-- A → more SFT, simpler format, bigger model. GRPO cannot help.
-- B → more sampling diversity, less SFT, corpus rebalance. GRPO can help.
-
-The old "extreme mode collapse" message would falsely diagnose A as B and
-recommend reducing SFT_STEPS, which is the *opposite* of the right fix.
-
-#### 9d. `cascade_grpo_reward`: track `unparseable_count` separately
-```python
-# In training/train_grpo.py
-unparseable_count = 0
-...
-if not parseable:
-    unparseable_count += 1
-    action_log.append("__UNPARSEABLE__")  # don't pollute action_log with fallback
-else:
-    action_log.append(f"{agent_action.action_type}({agent_action.target_node_id})")
-```
-
-Telemetry log line now includes `unparseable=K/N`. New WARNING text
-distinguishes "all unparseable" (model didn't learn format) from "all
-collapsed to one parseable action" (true mode collapse) — they need
-different fixes.
-
-### Manual verification
-1. Cell B output must include the `unparseable=` column per row AND
-   `unparseable rate` line in the summary. If the unparseable rate is
-   `>= 50%`, Cell B will hard-fail with the **new** message that says
-   "model is NOT producing valid actions" — NOT the old "mode collapse"
-   message.
-2. When unparseable rate > 0, Cell B must print `── raw completions` blocks
-   showing the actual model text. If you don't see these blocks, the fix
-   isn't deployed.
-3. During GRPO training, `GRPO[N]` lines now show `unparseable=K/N`. If
-   `K = N` repeatedly, the `UNPARSEABLE GROUP` warning explicitly tells you
-   GRPO cannot fix this — fix the format upstream.
-
-### When this fixes vs reveals the underlying issue
-This change does NOT fix the root cause — the model is still producing
-unparseable text. It exposes the lie hiding underneath the symptom. The
-correct response after deploying 9a–9d is:
-
-| What raw completions look like | Real fix |
-|---|---|
-| `"I'll wait and see..."` (chat fluff) | SFT_STEPS = 250-300 (more), verify SFT corpus actually has `<action>X(Y)</action>` in completion column |
-| Truncated mid-`<think>` | `MAX_COMP_LEN = 400` (was 200) |
-| Empty / single newline | Set `min_new_tokens=20` in generate kwargs; check pad_token_id |
-| `<action>foo(BAR)</action>` but `foo` not in VALID_ACTIONS | SFT corpus has invalid action types; clean it |
 
 ---
 

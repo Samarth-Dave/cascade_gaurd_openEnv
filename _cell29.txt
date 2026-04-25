@@ -1,0 +1,21 @@
+python : Traceback (most recent call last):
+At C:\Users\Samarth Dave\AppData\Local\Temp\ps-script-b1521b32-32f7-41e6-94c8-5d3b853d33e3.ps1:107 char:1
++ python -c "
++ ~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "<string>", line 7, in <module>
+    print(f'{i+1:4d} | {line[:130]}')
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+CELL 29 LENGTH: 10483 chars
+   1 | import os, torch
+   2 | from trl import GRPOTrainer, GRPOConfig
+   3 | from pathlib import Path
+   4 | from transformers import TrainerCallback
+   5 | 
+   6 | 
+  File "C:\Users\Samarth Dave\miniconda3\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 9-10: character maps to <undefined>
