@@ -29,7 +29,7 @@ class LlmClient:
         model_name: Optional[str] = None,
     ) -> None:
         self.model_path = (model_path or os.getenv("MODEL_PATH") or "./model").strip()
-        self.model_name = (model_name or os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-1.5B-Instruct").strip()
+        self.model_name = (model_name or os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-0.5B-Instruct").strip()
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self._model = None
         self._tokenizer = None
