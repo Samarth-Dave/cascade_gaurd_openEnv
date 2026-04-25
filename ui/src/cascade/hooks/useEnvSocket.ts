@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CGObservation } from '../data/types';
 import { ENV_BASE, ENV_WS } from '../config/env';
 import { normalizeObservation } from '../lib/liveObservation';
+import { apiClient } from '@/api/client';
 
 const SOCKET_DEBUG = import.meta.env.DEV;
 
@@ -123,7 +124,7 @@ export function useEnvSocket(
 
     let ws: WebSocket;
     try {
-      ws = new WebSocket(ENV_WS);
+      ws = apiClient.createSocket(ENV_WS);
     } catch (error) {
       wsConnectingRef.current = false;
       setLastObs(null);

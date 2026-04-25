@@ -1,0 +1,56 @@
+---
+title: CascadeGuard Backend
+emoji: ⚡
+colorFrom: red
+colorTo: blue
+sdk: docker
+pinned: false
+---
+
+# CascadeGuard Backend
+
+Session-aware FastAPI orchestration layer for the judge-facing demo.
+
+## What it does
+
+- exposes `/api/*` endpoints for episode control, analytics, history, and dataset download
+- talks to the deployed OpenEnv environment server via `OPENENV_SERVER_URL`
+- loads a local or HuggingFace model at startup for `/api/episode/agent-step`
+- streams live episode events over `ws/episode/{session_id}`
+
+## Environment
+
+Copy `.env.example` and set:
+
+- `OPENENV_SERVER_URL`
+- `MODEL_PATH`
+- `MODEL_NAME`
+- `UI_SPACE_URL`
+- `PORT`
+
+Judges: place your model in `./model` directory OR set `MODEL_NAME` to a HuggingFace model ID. The model loads automatically on backend startup.
+
+## Local Run
+
+```powershell
+cd backend
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+uvicorn main:app --reload --host 0.0.0.0 --port 7860
+```
+
+## Main Routes
+
+- `GET /api/health`
+- `POST /api/episode/reset`
+- `POST /api/episode/step`
+- `POST /api/episode/agent-step`
+- `GET /api/episode/state/{session_id}`
+- `GET /api/episodes/history`
+- `GET /api/training/reward-curve`
+- `GET /api/training/baseline-comparison`
+- `GET /api/environment/graph`
+- `GET /api/dataset/sft`
+- `GET /api/dataset/sft/stats`
+- `WS /ws/episode/{session_id}`

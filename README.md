@@ -22,6 +22,43 @@ CascadeGuard is a cascading-failure resilience system built around two pieces:
 
 The backend models failures across power, water, hospital, and telecom systems. The frontend connects to the backend over WebSocket, renders the live graph and sector health, and lets the user step the environment or dispatch actions.
 
+## Live Demo
+
+| Component | URL |
+|-----------|-----|
+| Interactive UI | https://<ui-space>.hf.space |
+| Backend API + Docs | https://<backend-space>.hf.space/docs |
+| Environment Server | https://<env-space>.hf.space |
+
+## Training Results
+
+![Reward Curve](training/plots/reward_curve.png)
+
+| Policy | Mean Score |
+|--------|-----------|
+| Random baseline | 0.23 |
+| Zero-shot LLM (no training) | 0.49 |
+| GRPO Trained — 50 episodes | 0.81 |
+
+## Demo Flow for Judges
+
+1. Open the UI link above
+2. Select `task_hard`, `seed=42` and click `Start Episode`
+3. Click `Auto-Run` and watch the agent contain the cascade autonomously
+4. Switch to `Analytics` to inspect the 0.23 → 0.81 improvement
+5. Switch to `Dataset` to browse 155 SFT examples with CoT reasoning
+
+## Repository Structure
+
+```text
+cascade_gaurd_openEnv/
+├── server/          <- OpenEnv environment (Space #1, already deployed)
+├── backend/         <- FastAPI orchestration layer (Space #2)
+├── ui/              <- React demo dashboard (Space #3)
+├── training/        <- GRPO Colab + scripts + reward curve plots
+└── data/            <- SFT dataset (155 examples) + node graph
+```
+
 ## Repository Layout
 
 This git repository contains the environment and server:

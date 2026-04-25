@@ -95,6 +95,7 @@ class CascadeEnvironment(Environment):
     """
 
     def __init__(self) -> None:
+        super().__init__()
         self._task_id: str = "task_easy"
         self._step: int = 0
         self._node_states: Dict[str, _NodeState] = {}
@@ -275,15 +276,17 @@ class CascadeEnvironment(Environment):
 
         self._obs_buffer = {nid: [] for nid in self._node_states}
 
-        # Build geo coverage matrix from task node definitions
+        # Cache node coordinates directly from the task config so lat/lon are
+        # still exposed in observations even if geo helper imports are unavailable.
         self._node_coords = {}
+        for n in cfg["nodes"]:
+            nid = n["node_id"]
+            default_coords = DEFAULT_NODE_COORDS.get(nid, (0.0, 0.0, 0.0)) if GEO_AVAILABLE else (0.0, 0.0, 0.0)
+            lat = n.get("lat", default_coords[0])
+            lon = n.get("lon", default_coords[1])
+            radius = n.get("service_radius_km", default_coords[2])
+            self._node_coords[nid] = (lat, lon, radius)
         if GEO_AVAILABLE:
-            for n in cfg["nodes"]:
-                nid = n["node_id"]
-                lat = n.get("lat", DEFAULT_NODE_COORDS.get(nid, (0.0, 0.0, 0.0))[0])
-                lon = n.get("lon", DEFAULT_NODE_COORDS.get(nid, (0.0, 0.0, 0.0))[1])
-                radius = n.get("service_radius_km", DEFAULT_NODE_COORDS.get(nid, (0.0, 0.0, 0.0))[2])
-                self._node_coords[nid] = (lat, lon, radius)
             self._coverage_matrix = compute_coverage_matrix(self._node_coords)
         else:
             self._coverage_matrix = {}
@@ -1469,7 +1472,7 @@ class CascadeEnvironment(Environment):
 
             # v2: geo fields from node_coords
             n_lat, n_lon, n_radius = (0.0, 0.0, 0.0)
-            if GEO_AVAILABLE and nid in self._node_coords:
+            if nid in self._node_coords:
                 n_lat, n_lon, n_radius = self._node_coords[nid]
 
             node_list.append(
@@ -1806,7 +1809,7 @@ class CascadeEnvironment(Environment):
             self._zero_sector_streak += 1
         else:
             self._zero_sector_streak = 0
-        if self._step >= 6 and self._zero_sector_streak >= 4:
+        if self._step >= 6 and self._zero_sector_streak >= 8:
             return True
 
         # Condition 3: early success — only allowed in the final 10% of the

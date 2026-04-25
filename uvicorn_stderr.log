@@ -1,0 +1,6 @@
+INFO:     Will watch for changes in these directories: ['D:\\MetaHack\\Round 2 (Finale)\\cascade_gaurd_openEnv']
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     Started reloader process [4192] using WatchFiles
+INFO:     Started server process [4696]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.

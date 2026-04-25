@@ -315,7 +315,7 @@ export function LiveMap(p: Props) {
           <div className="relative">
             <div ref={mapRef} className="w-full" style={{ height: 540 }} />
             {/* Action Dispatch */}
-            <div className="hidden md:block absolute top-3 left-3 z-30 w-[224px] rounded-xl bg-card border border-foreground/15 cg-shadow-card p-3 flex flex-col" style={{ maxHeight: 'calc(540px - 252px)', overflow: 'hidden' }}>
+            <div className="hidden md:block absolute top-3 left-3 z-30 w-[224px] rounded-xl bg-card border border-foreground/15 cg-shadow-card p-3" style={{ maxHeight: '480px', display: 'flex', flexDirection: 'column', gap: 0 }}>
               <div className="flex items-center gap-2 mb-2">
                 <span className="relative inline-flex h-2 w-2 rounded-full bg-[hsl(var(--green))] cg-live-pulse" />
                 <span className="text-xs font-bold">Dispatch Action</span>
@@ -327,8 +327,8 @@ export function LiveMap(p: Props) {
                 {p.nodes.map(n => <option key={n.node_id} value={n.node_id}>{n.node_id} · {n.sector}</option>)}
               </select>
               <div
-                className="mt-2 space-y-1 overflow-y-auto"
-                style={{ flex: '1 1 0', minHeight: 0, overflowY: 'auto' }}
+                className="mt-2 space-y-1"
+                style={{ flex: '1 1 0', minHeight: 0, overflowY: 'auto', maxHeight: '360px' }}
               >
                 {actionDefs.map((a) => {
                   const sample = p.actionSamples[a.key];
