@@ -21,7 +21,9 @@ tags:
 > **Train LLMs to reason about infrastructure crises that siloed human organisations structurally cannot.**
 
 [![HuggingFace Environment Space](https://img.shields.io/badge/🤗%20HF%20Environment-cascade--failure--env-blue)](https://huggingface.co/spaces/samarthdave0305/cascade-failure-env)
-[![HuggingFace Training Results](https://img.shields.io/badge/🤗%20HF%20Training%20Results-my--training-green)](https://huggingface.co/spaces/samarthdave0305/my-training)
+[![HuggingFace Backend](https://img.shields.io/badge/🤗%20HF%20Backend-API-green)](https://harshit0400-backend.hf.space)
+[![HuggingFace Frontend](https://img.shields.io/badge/🤗%20HF%20Frontend-CascadeGuardUI-orange)](https://huggingface.co/spaces/LordBhatt/CascadeGuardUI)
+[![HuggingFace Model](https://img.shields.io/badge/🤗%20HF%20Model-cascadeguard--trained-red)](https://huggingface.co/samarthdave0305/cascadeguard-trained/tree/main)
 [![OpenEnv](https://img.shields.io/badge/Built%20on-OpenEnv-orange)](https://github.com/openenv/openenv)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -32,10 +34,12 @@ tags:
 | Resource | Link |
 |---|---|
 | 🌐 **Live Environment (HF Space)** | [https://huggingface.co/spaces/samarthdave0305/cascade-failure-env](https://huggingface.co/spaces/samarthdave0305/cascade-failure-env) |
-| 📊 **Training Results & Loss/Reward Plots** | [https://huggingface.co/spaces/samarthdave0305/my-training](https://huggingface.co/spaces/samarthdave0305/my-training) |
+| ⚙️ **Backend API (HF Space)** | [https://harshit0400-backend.hf.space](https://harshit0400-backend.hf.space) |
+| 🖥️ **Frontend UI (HF Space)** | [https://huggingface.co/spaces/LordBhatt/CascadeGuardUI](https://huggingface.co/spaces/LordBhatt/CascadeGuardUI) |
+| 🧠 **Trained Adapter Checkpoint** | [https://huggingface.co/samarthdave0305/cascadeguard-trained/tree/main](https://huggingface.co/samarthdave0305/cascadeguard-trained/tree/main) |
 | ▶️ **UI Demo Video (YouTube)** | [https://www.youtube.com/watch?v=REPLACE_WITH_UI_DEMO](https://www.youtube.com/watch?v=REPLACE_WITH_UI_DEMO) |
 | 💻 **GitHub Repository** | [https://github.com/Samarth-Dave/cascade_gaurd_openEnv](https://github.com/Samarth-Dave/cascade_gaurd_openEnv) |
-| 📓 **Training Notebook (Colab)** | See [`training/`](./training/) folder |
+| 📓 **Test vs Trained Notebook** | [test vs trained.ipynb](./test%20vs%20trained.ipynb) |
 | 🏗️ **Architecture & Env Design** | [CASCADEGUARD_MASTER_README.md](./CASCADEGUARD_MASTER_README.md) |
 
 ---
@@ -198,7 +202,8 @@ We fine-tuned **DeepSeek** using **GRPO (Group Relative Policy Optimisation)** v
 ### Training Results
 
 📊 **Full training plots (loss, reward curves, step-by-step):**
-👉 [https://huggingface.co/spaces/samarthdave0305/my-training](https://huggingface.co/spaces/samarthdave0305/my-training)
+- [assets/results](./assets/results)
+- [test vs trained.ipynb](./test%20vs%20trained.ipynb)
 
 **Key metrics observed:**
 - Training loss decreases consistently across episodes, confirming the model is learning environment structure
@@ -208,7 +213,7 @@ We fine-tuned **DeepSeek** using **GRPO (Group Relative Policy Optimisation)** v
 
 ### Training Plots
 
-> 📌 See the [HF Training Space](https://huggingface.co/spaces/samarthdave0305/my-training) for all loss and reward plots.
+> 📌 See [assets/results](./assets/results) and [test vs trained.ipynb](./test%20vs%20trained.ipynb) for all loss/reward and baseline-vs-trained plots.
 > Plots are labelled with `training_step` on x-axis and `reward / loss` on y-axis.
 > Baseline (random policy) vs. trained agent comparison is shown on the same axes.
 
@@ -256,7 +261,7 @@ The HF Space runs the full FastAPI + OpenEnv backend. The frontend connects live
 - [x] Built on **OpenEnv** (latest release) using `Environment` / `MCPEnvironment` base classes
 - [x] Valid `openenv.yaml` manifest
 - [x] Working training script using **Hugging Face TRL + GRPO** — see [`training/`](./training/)
-- [x] **Training evidence**: loss and reward plots at [HF Training Space](https://huggingface.co/spaces/samarthdave0305/my-training)
+- [x] **Training evidence**: loss/reward plots in [assets/results](./assets/results) and [test vs trained.ipynb](./test%20vs%20trained.ipynb)
 - [x] Environment pushed to **HF Space**: [cascade-failure-env](https://huggingface.co/spaces/samarthdave0305/cascade-failure-env)
 - [x] **README** motivates problem, explains env, shows results (this file)
 - [x] Client/server separation respected — clients never import server internals
@@ -340,8 +345,10 @@ Could a researcher write a paper about this? Yes — this is a new benchmark in 
 - [IMPROVEMENTS_LOG.md](./IMPROVEMENTS_LOG.md) — development history and iteration log
 - [FUTURE_IMPROVEMENTS.md](./FUTURE_IMPROVEMENTS.md) — roadmap
 - [HOW_TO_RUN.md](./HOW_TO_RUN.md) — detailed run instructions
-- [HF Training Space](https://huggingface.co/spaces/samarthdave0305/my-training) — all training plots
+- [HF Backend](https://harshit0400-backend.hf.space) — backend API Space
+- [HF Frontend](https://huggingface.co/spaces/LordBhatt/CascadeGuardUI) — frontend UI Space
 - [HF Environment Space](https://huggingface.co/spaces/samarthdave0305/cascade-failure-env) — live runnable env
+- [HF Trained Adapter](https://huggingface.co/samarthdave0305/cascadeguard-trained/tree/main) — latest adapter checkpoint
 
 ---
 
@@ -382,14 +389,14 @@ Suggested captions:
 
 - SFT training has completed successfully on the 32B DeepSeek-R1-Distill-Qwen model with LoRA.
 - The SFT adapter checkpoint has been pushed to Hugging Face Hub.
-- GRPO reaches real training but currently needs reduced memory settings on A100 for the 32B model. The training Space now uses smaller GRPO generation settings to avoid CUDA OOM.
+- GRPO reaches real training but currently needs reduced memory settings on A100 for the 32B model. The backend training service now uses smaller GRPO generation settings to avoid CUDA OOM.
 - The README should be updated with final GRPO reward plots once the reduced-memory run completes.
 
 ### Final Submission Checklist
 
 - [x] OpenEnv environment and manifest are present.
 - [x] Hugging Face environment Space is linked.
-- [x] Hugging Face training Space is linked.
+- [x] Hugging Face backend and frontend links are included.
 - [x] SFT training evidence exists.
 - [ ] Add final GRPO reward plot to `assets/results/training_reward_curve.png`.
 - [ ] Add baseline-vs-trained comparison plot to `assets/results/baseline_vs_trained_reward.png`.

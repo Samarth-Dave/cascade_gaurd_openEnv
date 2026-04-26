@@ -180,9 +180,12 @@ python training/grpo_train.py --task task_easy --steps 100
 python training/plot_curves.py --log training/reward_log.csv --out figs/
 ```
 
-- 🤗 **HuggingFace Space**: [link]
-- 🐙 **GitHub**: [link]
-- 📓 **Colab Notebook**: [training/CascadeGuard_GRPO_Colab.ipynb]
+- 🌐 **Environment Space**: https://huggingface.co/spaces/samarthdave0305/cascade-failure-env
+- ⚙️ **Backend API Space**: https://harshit0400-backend.hf.space
+- 🖥️ **Frontend UI Space**: https://huggingface.co/spaces/LordBhatt/CascadeGuardUI
+- 🧠 **Trained Adapter Checkpoint**: https://huggingface.co/samarthdave0305/cascadeguard-trained/tree/main
+- 🐙 **GitHub**: https://github.com/Samarth-Dave/cascade_gaurd_openEnv
+- 📓 **Test vs Trained Notebook**: [../test vs trained.ipynb](../test%20vs%20trained.ipynb)
 
 ---
 

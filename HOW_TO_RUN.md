@@ -87,7 +87,7 @@ python training/train_grpo.py \
   --model Qwen/Qwen2.5-1.5B-Instruct
 ```
 
-### In Google Colab (see `CascadeGuard_GRPO_Colab.ipynb`):
+### In notebook mode (see `test vs trained.ipynb`):
 Set in Cell 1:
 ```python
 TRAIN_MODEL      = "Qwen/Qwen2.5-1.5B-Instruct"

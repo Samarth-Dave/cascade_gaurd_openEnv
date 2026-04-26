@@ -13,7 +13,7 @@ CHANGELOG vs original:
     correctly; the GRPO script's `mkw` dict used the old `'dtype':` key.
 """
 
-import os, sys, subprocess, time, threading, math, json, re
+import os, sys, subprocess, time, threading, math, json, re, ast
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 import matplotlib
 matplotlib.use('Agg')  # headless — no display needed
@@ -33,6 +33,7 @@ RESULTS_CSV  = os.path.join(REPO_DIR, 'cascadeguard_eval_results.csv')
 CACHE_DIR    = '/tmp/cascadeguard_hf_cache'
 OSM_CACHE    = '/tmp/osmnx_cache'
 SFT_DATASET_PATH = os.path.join(REPO_DIR, 'cascadeguard_sft_dataset.csv')
+LIVE_LOG_PATH = os.path.join(BASE_DIR, 'cascadeguard_training_live.log')
 
 # ── HF Token ──────────────────────────────────────────────────────────────────
 HF_TOKEN = os.environ.get('HF_TOKEN', '')
@@ -90,7 +91,12 @@ grpo_records  = []
 def log(msg):
     print(msg, flush=True)
     log_lines.append(msg)
-    if len(log_lines) > 1000:
+    try:
+        with open(LIVE_LOG_PATH, 'a', encoding='utf-8') as fh:
+            fh.write(str(msg) + '\n')
+    except Exception:
+        pass
+    if len(log_lines) > 5000:
         log_lines.pop(0)
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -781,6 +787,26 @@ def run_grpo():
     log(f"Running: {' '.join(cmd)}")
 
     grpo_records = []
+    seen_grpo_steps = {}
+    trainer_log_count = 0
+
+    def record_grpo(step_num, reward=None, loss=None, lr=None):
+        if step_num <= 0:
+            return
+        step = SFT_STEPS + int(step_num)
+        rec = seen_grpo_steps.get(step)
+        if rec is None:
+            rec = {'step': step}
+            seen_grpo_steps[step] = rec
+            grpo_records.append(rec)
+            globals()['grpo_records'].append(rec)
+        if reward is not None:
+            rec['reward'] = float(reward)
+        if loss is not None:
+            rec['loss'] = float(loss)
+        if lr is not None:
+            rec['lr'] = float(lr)
+
     try:
         sub_env = {
             **os.environ,
@@ -798,15 +824,29 @@ def run_grpo():
         for line in proc.stdout:
             line = line.rstrip()
             log(line)
-            m = re.search(r'step[_\s:=]+(\d+).*?reward[_\s:=]+([-\d.]+)', line, re.I)
+
+            parsed = None
+            stripped = line.strip()
+            if stripped.startswith('{') and "'reward'" in stripped:
+                try:
+                    parsed = ast.literal_eval(stripped)
+                except Exception:
+                    parsed = None
+
+            if isinstance(parsed, dict) and 'reward' in parsed:
+                trainer_log_count += 1
+                record_grpo(
+                    trainer_log_count,
+                    reward=parsed.get('reward'),
+                    loss=parsed.get('loss'),
+                    lr=parsed.get('learning_rate'),
+                )
+                continue
+
+            m = re.search(r'GRPO\[(\d+)\].*?reward\s+mu=([-\d.]+)', line, re.I)
             if m:
                 try:
-                    rec = {
-                        'step':   SFT_STEPS + int(m.group(1)),
-                        'reward': float(m.group(2)),
-                    }
-                    grpo_records.append(rec)
-                    globals()['grpo_records'].append(rec)
+                    record_grpo(int(m.group(1)), reward=float(m.group(2)))
                 except ValueError:
                     pass
         proc.wait()
@@ -988,12 +1028,45 @@ training_thread.start()
 
 def get_logs():
     status = "✅ COMPLETE" if training_done else "🔄 RUNNING..."
-    return f"Status: {status}\n\n" + "\n".join(log_lines[-150:])
+    return f"Status: {status}\nFull log file: {LIVE_LOG_PATH}\n\n" + "\n".join(log_lines[-400:])
+
+def _live_curve(records, key, title, ylabel, tmp_name, color):
+    xs = [r['step'] for r in records if key in r and not math.isnan(r.get(key, float('nan')))]
+    ys = [r[key] for r in records if key in r and not math.isnan(r.get(key, float('nan')))]
+    if not xs:
+        return None
+
+    fig, ax = plt.subplots(figsize=(8, 3))
+    ax.plot(xs, ys, color=color, lw=1.4, marker='o', ms=2.5, alpha=0.85)
+    if len(ys) >= 6:
+        w = min(10, max(3, len(ys) // 8))
+        smoothed = np.convolve(np.array(ys), np.ones(w) / w, mode='valid')
+        ax.plot(xs[w-1:], smoothed, color='#1a1a1a', lw=2, label=f'Smoothed w={w}')
+        ax.legend(fontsize=8)
+    ax.set_title(title, fontweight='bold')
+    ax.set_xlabel('Step')
+    ax.set_ylabel(ylabel)
+    ax.grid(True, alpha=0.25, ls='--')
+    plt.tight_layout()
+    tmp = os.path.join('/tmp', tmp_name)
+    fig.savefig(tmp, dpi=120, bbox_inches='tight')
+    plt.close()
+    return tmp
 
 def get_loss_curve():
     path = os.path.join(CURVES_DIR, 'training_loss_curve.png')
     if os.path.exists(path):
         return path
+    live = _live_curve(
+        sorted(sft_records + grpo_records, key=lambda r: r['step']),
+        'loss',
+        'CascadeGuard Live Training Loss',
+        'Loss',
+        'live_training_loss_curve.png',
+        '#3a7ebf',
+    )
+    if live:
+        return live
     fig, ax = plt.subplots(figsize=(8, 3))
     ax.text(0.5, 0.5, 'Loss curve will appear here once SFT starts',
             ha='center', va='center', transform=ax.transAxes,
@@ -1008,6 +1081,16 @@ def get_reward_curve():
     path = os.path.join(CURVES_DIR, 'training_reward_curve.png')
     if os.path.exists(path):
         return path
+    live = _live_curve(
+        sorted(grpo_records, key=lambda r: r['step']),
+        'reward',
+        'CascadeGuard Live GRPO Reward',
+        'Mean reward',
+        'live_training_reward_curve.png',
+        '#2b8a3e',
+    )
+    if live:
+        return live
     fig, ax = plt.subplots(figsize=(8, 3))
     ax.text(0.5, 0.5, 'Reward curve will appear here once GRPO starts',
             ha='center', va='center', transform=ax.transAxes,

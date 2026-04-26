@@ -12,9 +12,10 @@ Links:
 
 | Resource | Link |
 |---|---|
+| Backend API Space | https://harshit0400-backend.hf.space |
+| Frontend UI Space | https://huggingface.co/spaces/LordBhatt/CascadeGuardUI |
 | Live environment Space | https://huggingface.co/spaces/samarthdave0305/cascade-failure-env |
-| Training Space | https://huggingface.co/spaces/samarthdave0305/my-training |
-| Trained adapter checkpoint | https://huggingface.co/samarthdave0305/cascadeguard-trained |
+| Trained adapter checkpoint | https://huggingface.co/samarthdave0305/cascadeguard-trained/tree/main |
 | GitHub repository | https://github.com/Samarth-Dave/cascade_gaurd_openEnv |
 | Result assets folder | `assets/results/` |
 
@@ -135,7 +136,7 @@ The current Space trains `deepseek-ai/DeepSeek-R1-Distill-Qwen-32B` with 4-bit q
 
 ## Training Evidence
 
-SFT has completed successfully on the Hugging Face training Space.
+SFT has completed successfully on the Hugging Face backend training service.
 
 Observed SFT run:
 
@@ -150,7 +151,7 @@ Observed SFT run:
 
 This shows the model learned the action format and environment structure during supervised fine-tuning.
 
-GRPO has reached real training. The first full attempt with `generations=4`, `max_seq_len=1024`, and `max_completion_len=256` loaded the model and started GRPO, then hit CUDA out-of-memory on the A100 during per-token log-prob computation. The training Space has been updated to use reduced-memory GRPO settings:
+GRPO has reached real training. The first full attempt with `generations=4`, `max_seq_len=1024`, and `max_completion_len=256` loaded the model and started GRPO, then hit CUDA out-of-memory on the A100 during per-token log-prob computation. The backend training service has been updated to use reduced-memory GRPO settings:
 
 - `generations=2`
 - `max_seq_len=512`
@@ -178,10 +179,6 @@ Caption: GRPO reward over training step.
 ![Baseline vs trained reward](./assets/results/baseline_vs_trained_reward.png)
 
 Caption: Baseline policy versus trained policy on the same evaluation split.
-
-![Hospital uptime before and after](./assets/results/hospital_uptime_before_after.png)
-
-Caption: Critical-service protection before and after training.
 
 ![Dashboard screenshot](./assets/results/demo_dashboard.png)
 
