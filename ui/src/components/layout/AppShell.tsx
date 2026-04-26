@@ -14,13 +14,32 @@ const navItems = [
 ];
 
 export function AppShell() {
-  const { sessionId, state, isConnected } = useCascade();
+  const { sessionId, state, isConnected, autoRun, isAgentStepping, pending } = useCascade();
   const { data: health } = useQuery({
     queryKey: ["backend-health"],
     queryFn: apiClient.getHealth,
-    refetchInterval: 10_000,
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      if (!data) return 5_000;
+      if (data.model_loaded) return 30_000;
+      return 5_000;
+    },
+    refetchOnWindowFocus: true,
+    staleTime: 0,
   });
   const modelLoaded = health?.model_loaded ?? false;
+  const modelLoadState = health?.model_load_state ?? "idle";
+  const modelLoadError = health?.model_load_error ?? null;
+  const statusLabel = modelLoaded
+    ? "Model Ready"
+    : modelLoadState === "error"
+      ? "Model Error"
+      : "Model Loading";
+  const statusDotClass = modelLoaded
+    ? "bg-[hsl(var(--green))] cg-live-pulse"
+    : modelLoadState === "error"
+      ? "bg-[hsl(var(--destructive,var(--amber)))]"
+      : "bg-[hsl(var(--amber))]";
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -65,16 +84,45 @@ export function AppShell() {
           <header className="sticky top-0 z-20 border-b border-black/10 bg-background/88 backdrop-blur">
             <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-4 md:px-8">
               <div className="flex items-center gap-3">
-                <span className={cn("h-2.5 w-2.5 rounded-full", modelLoaded ? "bg-[hsl(var(--green))] cg-live-pulse" : "bg-[hsl(var(--amber))]")} />
+                <span className={cn("h-2.5 w-2.5 rounded-full", statusDotClass)} />
                 <div>
-                  <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-foreground/45">
-                    {modelLoaded ? "Model Ready" : "Model Loading"}
+                  <div
+                    className="font-mono text-[10px] uppercase tracking-[0.18em] text-foreground/45"
+                    title={modelLoadState === "error" && modelLoadError ? modelLoadError : undefined}
+                  >
+                    {statusLabel}
                   </div>
                   <div className="text-lg font-semibold">Cascade containment dashboard {isConnected ? "• Live" : "• Offline"}</div>
                 </div>
               </div>
-              <div className="rounded-full border border-black/10 bg-white/80 px-4 py-2 font-mono text-[11px] uppercase tracking-[0.16em] text-foreground/65">
-                {sessionId && state ? `${state.task} • ${sessionId.slice(0, 8)}` : "No active episode"}
+              <div className="flex flex-wrap items-center gap-2">
+                {/*
+                  Visible from every tab, not just /simulate. Fixes the
+                  "I changed tab and it forgot to take a step" confusion:
+                  the user can now tell at a glance whether auto-run is
+                  engaged and whether a step is currently in flight.
+                */}
+                {autoRun ? (
+                  <div
+                    className="inline-flex items-center gap-2 rounded-full border border-[hsl(var(--accent))] bg-[hsl(var(--accent))]/10 px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.18em] text-[hsl(var(--accent))]"
+                    title="Agent is running automatically. Toggle off on the Simulate tab."
+                  >
+                    <span className="h-2 w-2 rounded-full bg-[hsl(var(--accent))] cg-live-pulse" />
+                    Auto-Run {isAgentStepping ? "• Stepping" : "• Idle"}
+                  </div>
+                ) : null}
+                {!autoRun && (isAgentStepping || pending) ? (
+                  <div
+                    className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white/90 px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.18em] text-foreground/70"
+                    title="An agent step is in flight."
+                  >
+                    <span className="h-2 w-2 rounded-full bg-[hsl(var(--amber))] cg-live-pulse" />
+                    Agent Stepping
+                  </div>
+                ) : null}
+                <div className="rounded-full border border-black/10 bg-white/80 px-4 py-2 font-mono text-[11px] uppercase tracking-[0.16em] text-foreground/65">
+                  {sessionId && state ? `${state.task} • ${sessionId.slice(0, 8)}` : "No active episode"}
+                </div>
               </div>
             </div>
           </header>

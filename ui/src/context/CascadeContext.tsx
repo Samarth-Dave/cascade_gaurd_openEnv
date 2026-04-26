@@ -74,6 +74,12 @@ export function CascadeProvider({ children }: { children: ReactNode }) {
   const stateRef = useRef(state);
   const isAgentSteppingRef = useRef(isAgentStepping);
   const isResettingRef = useRef(isResetting);
+  // Count consecutive agent-step failures. We only disable auto-run after
+  // MAX_AUTORUN_FAILURES in a row so a single flaky request (slow CPU
+  // inference timing out, tab-throttling-induced fetch stall, backend
+  // restart, etc.) doesn't silently kill the loop.
+  const autoRunFailuresRef = useRef(0);
+  const MAX_AUTORUN_FAILURES = 3;
 
   useEffect(() => {
     autoRunRef.current = autoRun;
@@ -154,14 +160,42 @@ export function CascadeProvider({ children }: { children: ReactNode }) {
 
   // Auto-run loop. Spawned once per (autoRun on, sessionId) pair. The loop
   // awaits each agent step to fully complete (including state mutation) before
-  // sleeping 1500ms and queuing the next one. A cancelled flag + the autoRun
+  // sleeping and queuing the next one. A cancelled flag + the autoRun
   // ref guarantees a clean exit when the user toggles auto-run off, the
   // episode finishes, or the session changes.
+  //
+  // Tab-visibility hardening: when the browser background-throttles this
+  // tab, setTimeout is clamped (commonly >=1s, Chromium can clamp to
+  // >=60s after 5min of idling). We watch `visibilitychange` and wake
+  // the loop immediately when the user returns — this is why switching
+  // tabs and returning no longer feels "stuck".
   useEffect(() => {
     if (!autoRun || !sessionId) return;
     let cancelled = false;
+    let wake: (() => void) | null = null;
+    autoRunFailuresRef.current = 0;
+
+    // Promise-based sleep that can be interrupted by `wake()` (we resolve
+    // the same promise immediately when the tab regains focus).
     const sleep = (ms: number) =>
-      new Promise<void>((resolve) => window.setTimeout(resolve, ms));
+      new Promise<void>((resolve) => {
+        const timer = window.setTimeout(() => {
+          wake = null;
+          resolve();
+        }, ms);
+        wake = () => {
+          window.clearTimeout(timer);
+          wake = null;
+          resolve();
+        };
+      });
+
+    const onVisible = () => {
+      if (!document.hidden && wake) {
+        wake();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
 
     const loop = async () => {
       while (!cancelled && autoRunRef.current) {
@@ -177,13 +211,20 @@ export function CascadeProvider({ children }: { children: ReactNode }) {
         await runAgentStep();
         if (cancelled || !autoRunRef.current) return;
         if (stateRef.current?.done) return;
-        await sleep(1500);
+        // Back off on failure so we don't hammer the backend, but keep
+        // retrying — the user did opt into auto-run.
+        const nextDelay = autoRunFailuresRef.current > 0
+          ? Math.min(5_000, 1_000 * 2 ** (autoRunFailuresRef.current - 1))
+          : 1_500;
+        await sleep(nextDelay);
       }
     };
 
     void loop();
     return () => {
       cancelled = true;
+      if (wake) wake();
+      document.removeEventListener("visibilitychange", onVisible);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoRun, sessionId]);
@@ -276,9 +317,32 @@ export function CascadeProvider({ children }: { children: ReactNode }) {
         result.agent_action?.target ?? null,
         nextState,
       );
+      autoRunFailuresRef.current = 0;
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "Agent step failed.");
-      setAutoRun(false);
+      const message = requestError instanceof Error ? requestError.message : "Agent step failed.";
+      setError(message);
+      // Only kill auto-run after repeated failures. A single slow/dropped
+      // request (CPU model timeout, tab-throttle, backend restart) should
+      // not silently turn auto-run off.
+      if (autoRunRef.current) {
+        autoRunFailuresRef.current += 1;
+        if (autoRunFailuresRef.current >= MAX_AUTORUN_FAILURES) {
+          autoRunFailuresRef.current = 0;
+          setAutoRun(false);
+          appendLog(
+            "CRIT",
+            `Auto-run halted after ${MAX_AUTORUN_FAILURES} consecutive failures: ${message}`,
+          );
+        } else {
+          appendLog(
+            "WARN",
+            `Agent step failed (${autoRunFailuresRef.current}/${MAX_AUTORUN_FAILURES}): ${message}. Retrying...`,
+          );
+        }
+      } else {
+        // Manual step: surface the error but don't touch auto-run state.
+        autoRunFailuresRef.current = 0;
+      }
     } finally {
       setPending(false);
       setIsAgentStepping(false);

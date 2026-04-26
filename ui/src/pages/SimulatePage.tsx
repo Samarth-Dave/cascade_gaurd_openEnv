@@ -188,12 +188,22 @@ export default function SimulatePage() {
   });
 
   // Poll model status until it's ready so the Agent Step button can light up
-  // automatically once the background loader thread finishes.
+  // automatically once the background loader thread finishes. Polls fast
+  // while loading, slows down (but does NOT stop) on error so a restarted
+  // backend recovers without needing a page reload, and stops only once
+  // the model is fully loaded.
   const healthQuery = useQuery({
     queryKey: ["health"],
     queryFn: () => apiClient.getHealth(),
-    refetchInterval: (query) => (query.state.data?.model_loaded ? false : 1500),
-    refetchOnWindowFocus: false,
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      if (!data) return 1500;
+      if (data.model_loaded) return false;
+      if (data.model_load_state === "error") return 15_000;
+      return 1500;
+    },
+    refetchOnWindowFocus: true,
+    staleTime: 0,
   });
   const modelLoaded = healthQuery.data?.model_loaded ?? false;
   const modelLoadState = healthQuery.data?.model_load_state ?? "idle";

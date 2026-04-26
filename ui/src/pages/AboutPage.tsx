@@ -1,13 +1,47 @@
+import { useMemo } from "react";
+
+import { apiClient } from "@/api/client";
 import { Card } from "@/components/ui/card";
 
-const links = [
-  { label: "Interactive UI", href: "https://<ui-space>.hf.space" },
-  { label: "Backend API + Docs", href: "https://<backend-space>.hf.space/docs" },
-  { label: "Environment Server", href: "https://<env-space>.hf.space" },
-  { label: "GRPO Colab Notebook", href: "training/CascadeGuard_GRPO_Colab.ipynb" },
-];
+type AboutLink = {
+  label: string;
+  href: string;
+  display?: string;
+};
+
+function buildLinks(): AboutLink[] {
+  const origin =
+    apiClient.baseUrl ||
+    (typeof window !== "undefined" ? window.location.origin : "");
+  const docsHref = origin ? `${origin.replace(/\/+$/, "")}/docs` : "/docs";
+
+  return [
+    {
+      label: "Backend API + OpenAPI Docs",
+      href: docsHref,
+      display: docsHref,
+    },
+    {
+      label: "Open Simulation",
+      href: "/simulate",
+      display: "/simulate",
+    },
+    {
+      label: "Training Evidence",
+      href: "/analytics",
+      display: "/analytics",
+    },
+    {
+      label: "SFT Dataset Browser",
+      href: "/dataset",
+      display: "/dataset",
+    },
+  ];
+}
 
 export default function AboutPage() {
+  const links = useMemo(buildLinks, []);
+
   return (
     <div className="space-y-6">
       <div>
@@ -25,8 +59,11 @@ export default function AboutPage() {
         {links.map((link) => (
           <Card key={link.label} className="rounded-[28px] border-black/10 bg-white/88 p-5 shadow-[0_24px_60px_-36px_rgba(0,0,0,0.4)]">
             <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-foreground/45">{link.label}</div>
-            <a href={link.href} className="mt-3 block text-lg font-semibold text-[hsl(var(--accent))] underline-offset-4 hover:underline">
-              {link.href}
+            <a
+              href={link.href}
+              className="mt-3 block break-all text-lg font-semibold text-[hsl(var(--accent))] underline-offset-4 hover:underline"
+            >
+              {link.display ?? link.href}
             </a>
           </Card>
         ))}
