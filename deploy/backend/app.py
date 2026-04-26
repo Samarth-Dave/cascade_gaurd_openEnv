@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import importlib.util
 import json
 import logging
 import math
@@ -78,6 +79,49 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s - %(message)s",
 )
 logger = logging.getLogger("cascadeguard.deploy")
+logger.info("CascadeGuard deploy app import started.")
+
+RUNTIME_BOOTSTRAP_DEPS = (
+    {
+        "module": "openenv",
+        "requirement": "openenv-core==0.2.3",
+        "no_deps": True,
+    },
+    {
+        "module": "fastmcp",
+        "requirement": "fastmcp==2.11.3",
+        "no_deps": False,
+    },
+)
+
+
+def _ensure_runtime_dependency(module_name: str, requirement: str, *, no_deps: bool = False) -> None:
+    if importlib.util.find_spec(module_name) is not None:
+        return
+    logger.info(
+        "Installing missing runtime dependency %s%s ...",
+        requirement,
+        " --no-deps" if no_deps else "",
+    )
+    command = [sys.executable, "-m", "pip", "install", requirement]
+    if no_deps:
+        command.append("--no-deps")
+    subprocess.run(
+        command,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    logger.info("%s installed successfully.", requirement)
+
+
+for _dep in RUNTIME_BOOTSTRAP_DEPS:
+    _ensure_runtime_dependency(
+        _dep["module"],
+        _dep["requirement"],
+        no_deps=bool(_dep.get("no_deps", False)),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -137,6 +181,18 @@ if str(BASE_DIR) not in sys.path:
 if str(REPO_DIR) not in sys.path:
     sys.path.insert(0, str(REPO_DIR))
 
+# Importing ``cascade_guard.models`` normally executes the repo root
+# ``__init__.py`` first, and that imports ``client.py``. The client path needs
+# OpenEnv's WebSocket client (``websockets.asyncio``), which is intentionally
+# unavailable in Gradio 4.44 Spaces because gradio-client pins websockets<13.
+# This deploy app only needs the env models and server modules, so expose the
+# cloned repo as a namespace package and skip the eager client import.
+if "cascade_guard" not in sys.modules:
+    _cascade_pkg = types.ModuleType("cascade_guard")
+    _cascade_pkg.__path__ = [str(REPO_DIR)]  # type: ignore[attr-defined]
+    _cascade_pkg.__file__ = str(REPO_DIR / "__init__.py")
+    sys.modules["cascade_guard"] = _cascade_pkg
+
 
 # ---------------------------------------------------------------------------
 # Step 2 — lazy imports from the cloned repo. These are import-time required
@@ -169,7 +225,6 @@ from models import (  # noqa: E402  (must come after sys.path mutation)
 
 # Env-side pydantic models + the environment class itself.
 from cascade_guard.models import (  # noqa: E402
-    ALLOWED_ACTION_TYPES,
     CascadeAction,
 )
 from cascade_guard.server.cascade_environment import CascadeEnvironment  # noqa: E402
@@ -180,14 +235,14 @@ from session_manager import SessionManager  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
-# FastAPI + Gradio (Gradio is only here so HF Spaces gradio SDK renders a
-# landing page; every real call hits /api/*).
+# FastAPI app. Hugging Face's Gradio SDK still runs this app.py, but importing
+# gradio itself pulls pydub, which is fragile on Python 3.13 because audioop was
+# removed from the stdlib. This backend does not need Gradio components; it
+# serves a small landing payload from FastAPI instead.
 # ---------------------------------------------------------------------------
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import FileResponse, JSONResponse  # noqa: E402
-
-import gradio as gr  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -367,6 +422,10 @@ class LlmClient:
                 pass  # state already recorded
 
         threading.Thread(target=_runner, name="llm-loader", daemon=True).start()
+
+    def ensure_model_loading(self) -> None:
+        """Start background model loading if it has not already started."""
+        self.load_model_async()
 
     # -- inference -----------------------------------------------------
     async def get_action(self, raw_observation: Dict[str, Any]) -> Dict[str, Any]:
@@ -755,6 +814,7 @@ session_manager = SessionManager()
 
 @app.on_event("startup")
 async def on_startup() -> None:
+    logger.info("FastAPI startup started.")
     global CITY_NODE_LOOKUPS, GLOBAL_NODE_LOOKUP_BY_ID, GLOBAL_NODE_LOOKUP_LOWER
     CITY_NODE_LOOKUPS = _load_real_node_lookups()
     merged: Dict[str, Dict[str, Any]] = {}
@@ -767,10 +827,14 @@ async def on_startup() -> None:
         len(GLOBAL_NODE_LOOKUP_BY_ID), len(CITY_NODE_LOOKUPS),
     )
 
-    # Non-blocking model load so uvicorn startup doesn't time out. Health
-    # endpoint reports model_load_state="loading" until ready.
-    llm_client.load_model_async()
-    logger.info("Model load kicked off in background; serving traffic now.")
+    if os.getenv("PRELOAD_MODEL", "0").strip().lower() in {"1", "true", "yes"}:
+        # Optional: useful after the API is stable, but not during first Space
+        # bring-up because model downloads can make HF show "Starting" forever.
+        llm_client.load_model_async()
+        logger.info("Model preload kicked off in background.")
+    else:
+        logger.info("Model preload disabled; first agent-step will start loading.")
+    logger.info("FastAPI startup complete; serving traffic now.")
 
 
 @app.on_event("shutdown")
@@ -849,10 +913,11 @@ async def agent_step(payload: Dict[str, str]) -> StepResult:
     if not session_id:
         raise HTTPException(status_code=422, detail="session_id is required")
     if not llm_client.is_loaded():
+        llm_client.ensure_model_loading()
         raise HTTPException(
             status_code=503,
             detail={
-                "error": "Model loading, please wait",
+                "error": "Model loading, please retry after /api/health reports model_load_state='ready'",
                 "load_state": llm_client.load_state,
                 "load_error": llm_client.load_error,
             },
@@ -1436,14 +1501,25 @@ def _landing_markdown() -> str:
     )
 
 
-with gr.Blocks(title="CascadeGuard Backend") as demo:
-    gr.Markdown(_landing_markdown())
+@app.get("/", include_in_schema=False)
+async def landing() -> JSONResponse:
+    return JSONResponse({
+        "status": "ok",
+        "service": "CascadeGuard Backend",
+        "health": "/api/health",
+        "docs": "/docs",
+        "graph": "/api/environment/graph",
+        "dataset_stats": "/api/dataset/sft/stats",
+        "episode_reset": "POST /api/episode/reset",
+        "episode_step": "POST /api/episode/step",
+        "agent_step": "POST /api/episode/agent-step",
+        "websocket": "/ws/episode/{session_id}",
+    })
 
 
 # Mount gradio on top of the FastAPI app at '/'. The important bit: all
 # /api/* and /ws/* routes remain handled by FastAPI first; Gradio only
 # renders at '/' (and /assets/, /config, etc.).
-app = gr.mount_gradio_app(app, demo, path="/")
 
 
 if __name__ == "__main__":

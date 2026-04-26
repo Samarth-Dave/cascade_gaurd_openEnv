@@ -36,8 +36,8 @@ Everything the React UI needs is available from this one URL.
 
 You need exactly three files in this Space repo:
 
-- `app.py`           &nbsp;← from `deploy/app.py`
-- `requirements.txt` &nbsp;← from `deploy/requirements.txt`
+- `app.py`           &nbsp;← from `deploy/backend/app.py`
+- `requirements.txt` &nbsp;← from `deploy/backend/requirements.txt`
 - `README.md`        &nbsp;← this file
 
 The Space will clone the main CascadeGuard repo at startup (by default
