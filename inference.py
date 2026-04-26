@@ -90,15 +90,30 @@ BASELINE_RESULTS_PATH: str = os.environ.get("BASELINE_RESULTS_PATH", "baseline_r
 SYSTEM_PROMPT = (
     "You are an infrastructure resilience agent. "
     "First reason briefly inside <think>...</think>, then output ONLY one JSON object.\n"
-    'Format: <think>brief reasoning</think>{"action_type": "harden|shed_load|coordinate|recover|wait", '
-    '"target_node_id": "NODE_ID or null"}\n'
+    'Format: <think>brief reasoning</think>{"action_type": "harden|shed_load|coordinate|recover|isolate|reroute|prioritize|deploy_repair_crew|emergency_shutdown|cross_sector_bridge|patch_scada|redistribute_load|request_mutual_aid|controlled_cascade|multi_sector_lockdown|wait", '
+    '"target_node_id": "NODE_ID or sector or null", "parameters": {}}\n'
     "Rules (in order of priority): "
     "1) NEVER shed_load on hospital-sector or critical nodes. "
     "2) ALWAYS recover in RecOrder sequence; do not recover blocked leaf nodes. "
     "3) DO NOT wait if Fail or AtRisk are non-empty. "
-    "4) Harden before stress peaks when budget >=2. "
-    "5) Coordinate only when delayed observations exist and budget allows."
+    "4) Use patch_scada for cyber anomalies, deploy_repair_crew for pending repairs, and reroute/redistribute_load for overload propagation. "
+    "5) Harden before stress peaks when budget >=2. "
+    "6) Coordinate only when delayed observations exist and budget allows."
 )
+
+ADVANCED_ACTION_TYPES = {
+    "isolate",
+    "reroute",
+    "prioritize",
+    "deploy_repair_crew",
+    "emergency_shutdown",
+    "cross_sector_bridge",
+    "patch_scada",
+    "redistribute_load",
+    "request_mutual_aid",
+    "controlled_cascade",
+    "multi_sector_lockdown",
+}
 
 
 def _normalize_base_url(raw_url: Optional[str]) -> Optional[str]:
@@ -413,6 +428,37 @@ def _build_upstream_map(obs: Any) -> Dict[str, List[str]]:
 def _downstream_count(node_id: str, obs: Any) -> int:
     """Count how many nodes depend directly on node_id."""
     return sum(1 for e in obs.edges if e.source_id == node_id)
+
+
+def _action_signature(action: Dict[str, Any]) -> tuple[Any, Any, str]:
+    params = action.get("parameters") or {}
+    try:
+        params_key = json.dumps(params, sort_keys=True)
+    except TypeError:
+        params_key = str(params)
+    return action.get("action_type"), action.get("target_node_id"), params_key
+
+
+def _format_candidate_action(action: Dict[str, Any]) -> str:
+    action_type = action.get("action_type", "wait")
+    target = action.get("target_node_id")
+    params = action.get("parameters") or {}
+    if action_type == "reroute":
+        return f"reroute:{params.get('source', target)}->{params.get('target')}"
+    if action_type == "cross_sector_bridge":
+        return f"cross_sector_bridge:{params.get('sector_a', target)}->{params.get('sector_b')}"
+    if action_type == "redistribute_load":
+        return f"redistribute_load:{params.get('node_a', target)}->{params.get('node_b')}"
+    if action_type == "request_mutual_aid":
+        return f"request_mutual_aid:{params.get('sector', target)}"
+    return f"{action_type}:{target}"
+
+
+def _with_parameters(action_type: str, target: Optional[str], **params: Any) -> Dict[str, Any]:
+    action: Dict[str, Any] = {"action_type": action_type, "target_node_id": target}
+    if params:
+        action["parameters"] = params
+    return action
 
 
 @lru_cache(maxsize=None)
@@ -780,13 +826,13 @@ def _planner_default_action(planner_env: Any, task_id: str) -> Dict[str, Optiona
 
 
 def _merge_candidate_actions(
-    planner_candidates: List[Dict[str, Optional[str]]],
-    model_candidates: List[Dict[str, Optional[str]]],
-) -> List[Dict[str, Optional[str]]]:
-    merged: List[Dict[str, Optional[str]]] = []
+    planner_candidates: List[Dict[str, Any]],
+    model_candidates: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    merged: List[Dict[str, Any]] = []
     seen = set()
     for action in planner_candidates + model_candidates:
-        sig = (action.get("action_type"), action.get("target_node_id"))
+        sig = _action_signature(action)
         if sig in seen:
             continue
         seen.add(sig)
@@ -949,9 +995,88 @@ def _pick_coordinate_target(obs: Any) -> Optional[str]:
     return delayed[0].node_id
 
 
-def _is_action_valid_local(action: Dict[str, Optional[str]], obs: Any) -> bool:
+def _pick_scada_patch_target(obs: Any) -> Optional[str]:
+    diagnostics = getattr(obs, "diagnostics", None)
+    text = " ".join(getattr(diagnostics, "dependency_alerts", []) or []).lower()
+    if "scada" not in text and "cyber" not in text:
+        return None
+    telecom = [n for n in obs.nodes if n.sector == "telecom" and n.is_operational]
+    if telecom:
+        telecom.sort(key=lambda n: (n.health, -n.load))
+        return telecom[0].node_id
+    candidates = [n for n in obs.nodes if n.is_operational]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda n: n.health).node_id
+
+
+def _pick_redistribute_pair(obs: Any) -> Optional[tuple[str, str]]:
+    by_sector: Dict[str, List[Any]] = {}
+    for node in obs.nodes:
+        if node.is_operational:
+            by_sector.setdefault(node.sector, []).append(node)
+    for nodes in by_sector.values():
+        overloaded = [n for n in nodes if n.load > 0.85 and not n.is_critical and n.sector != "hospital"]
+        underloaded = [n for n in nodes if n.load < 0.55 and n.node_id not in {o.node_id for o in overloaded}]
+        if overloaded and underloaded:
+            source = max(overloaded, key=lambda n: n.load)
+            sink = min(underloaded, key=lambda n: n.load)
+            return source.node_id, sink.node_id
+    return None
+
+
+def _pick_reroute_pair(obs: Any) -> Optional[tuple[str, str]]:
+    node_map = {n.node_id: n for n in obs.nodes}
+    stressed = [
+        n for n in obs.nodes
+        if (not n.is_operational or n.health < 0.55 or n.load > 0.9) and n.sector != "hospital"
+    ]
+    if not stressed:
+        stressed = [n for n in obs.nodes if n.health < 0.7 or n.load > 0.85]
+    healthy_sources = [
+        n for n in obs.nodes
+        if n.is_operational and n.health > 0.75 and n.load < 0.8
+    ]
+    for target in sorted(stressed, key=lambda n: (not n.is_critical, n.health)):
+        upstream_ids = [e.source_id for e in obs.edges if e.target_id == target.node_id]
+        for source_id in upstream_ids:
+            source = node_map.get(source_id)
+            if source is not None and source in healthy_sources:
+                return source.node_id, target.node_id
+        for source in healthy_sources:
+            if source.sector == target.sector and source.node_id != target.node_id:
+                return source.node_id, target.node_id
+    return None
+
+
+def _pick_bridge_sectors(obs: Any) -> Optional[tuple[str, str]]:
+    sector_health = getattr(obs, "sector_summary", {}) or {}
+    if len(sector_health) < 2:
+        return None
+    weak = min(sector_health, key=sector_health.get)
+    strong = max(sector_health, key=sector_health.get)
+    if weak == strong:
+        return None
+    if sector_health.get(weak, 1.0) > 0.8:
+        return None
+    return strong, weak
+
+
+def _pick_mutual_aid_sector(obs: Any) -> Optional[str]:
+    sector_health = getattr(obs, "sector_summary", {}) or {}
+    if not sector_health:
+        return None
+    failed_sectors = {n.sector for n in obs.nodes if not n.is_operational}
+    if failed_sectors:
+        return min(failed_sectors, key=lambda s: sector_health.get(s, 1.0))
+    weak = min(sector_health, key=sector_health.get)
+    return weak if sector_health.get(weak, 1.0) < 0.75 else None
+
+
+def _is_action_valid_local(action: Dict[str, Any], obs: Any) -> bool:
     action_type = action.get("action_type")
     target_id = action.get("target_node_id")
+    params = action.get("parameters") or {}
     node_map = {n.node_id: n for n in obs.nodes}
 
     if action_type == "wait":
@@ -985,6 +1110,62 @@ def _is_action_valid_local(action: Dict[str, Optional[str]], obs: Any) -> bool:
         # Local dependency check from observable graph.
         upstream = [e.source_id for e in obs.edges if e.target_id == target_id]
         return all(node_map[u].is_operational for u in upstream if u in node_map)
+
+    if action_type == "isolate":
+        return target_id in node_map and not node_map[target_id].is_operational
+
+    if action_type == "reroute":
+        source = params.get("source") or target_id
+        target = params.get("target")
+        return (
+            source in node_map
+            and target in node_map
+            and source != target
+            and node_map[source].is_operational
+            and obs.budget_remaining >= 0.6
+        )
+
+    if action_type == "prioritize":
+        return target_id in node_map
+
+    if action_type == "deploy_repair_crew":
+        return target_id in set(obs.pending_recoveries or []) and obs.budget_remaining >= 1.2
+
+    if action_type == "emergency_shutdown":
+        return target_id in node_map and node_map[target_id].health < 0.30 and obs.budget_remaining >= 0.2
+
+    if action_type == "cross_sector_bridge":
+        sector_a = params.get("sector_a") or target_id
+        sector_b = params.get("sector_b")
+        sectors = {n.sector for n in obs.nodes}
+        return sector_a in sectors and sector_b in sectors and sector_a != sector_b and obs.budget_remaining >= 1.5
+
+    if action_type == "patch_scada":
+        return target_id in node_map and obs.budget_remaining >= 0.8
+
+    if action_type == "redistribute_load":
+        node_a = params.get("node_a") or target_id
+        node_b = params.get("node_b")
+        return (
+            node_a in node_map
+            and node_b in node_map
+            and node_a != node_b
+            and node_map[node_a].is_operational
+            and node_map[node_b].is_operational
+            and node_map[node_a].sector == node_map[node_b].sector
+            and obs.budget_remaining >= 0.5
+        )
+
+    if action_type == "request_mutual_aid":
+        sectors = {n.sector for n in obs.nodes}
+        sector = params.get("sector") or target_id
+        return sector in sectors and obs.budget_remaining >= 2.5
+
+    if action_type == "controlled_cascade":
+        return target_id in node_map
+
+    if action_type == "multi_sector_lockdown":
+        return obs.budget_remaining >= 2.0
 
     return False
 
@@ -1055,9 +1236,9 @@ def _build_candidate_actions(
     obs: Any,
     step: int,
     task_id: str,
-    playbook_action: Optional[Dict[str, Optional[str]]] = None,
-) -> List[Dict[str, Optional[str]]]:
-    candidates: List[Dict[str, Optional[str]]] = []
+    playbook_action: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    candidates: List[Dict[str, Any]] = []
     failed_now = [n for n in obs.nodes if not n.is_operational]
     overloaded_now = [n for n in obs.nodes if n.is_operational and n.load > 0.85]
     pressure = float(getattr(getattr(obs, "diagnostics", None), "system_pressure", 0.0) or 0.0)
@@ -1073,6 +1254,53 @@ def _build_candidate_actions(
     shed_target = _pick_safe_shed_target(obs)
     if shed_target is not None:
         candidates.append({"action_type": "shed_load", "target_node_id": shed_target})
+
+    redistribute_pair = _pick_redistribute_pair(obs)
+    if redistribute_pair is not None:
+        node_a, node_b = redistribute_pair
+        candidates.append(_with_parameters("redistribute_load", node_a, node_a=node_a, node_b=node_b))
+
+    reroute_pair = _pick_reroute_pair(obs)
+    if reroute_pair is not None and high_pressure:
+        source, target = reroute_pair
+        candidates.append(_with_parameters("reroute", source, source=source, target=target))
+
+    if obs.pending_recoveries and obs.budget_remaining >= 1.2:
+        candidates.append({"action_type": "deploy_repair_crew", "target_node_id": obs.pending_recoveries[0]})
+
+    scada_target = _pick_scada_patch_target(obs)
+    if scada_target is not None and obs.budget_remaining >= 0.8:
+        candidates.append({"action_type": "patch_scada", "target_node_id": scada_target})
+
+    shutdown_targets = [
+        n for n in obs.nodes
+        if n.health < 0.30 and n.is_operational and not n.is_critical and n.sector != "hospital"
+    ]
+    if shutdown_targets and obs.budget_remaining >= 0.2:
+        target = min(shutdown_targets, key=lambda n: n.health)
+        candidates.append({"action_type": "emergency_shutdown", "target_node_id": target.node_id})
+
+    if failed_now:
+        failed_noncritical = [n for n in failed_now if not n.is_critical]
+        if failed_noncritical:
+            target = min(failed_noncritical, key=lambda n: n.health)
+            candidates.append({"action_type": "isolate", "target_node_id": target.node_id})
+
+    bridge = _pick_bridge_sectors(obs)
+    if bridge is not None and high_pressure and obs.budget_remaining >= 1.5:
+        sector_a, sector_b = bridge
+        candidates.append(_with_parameters("cross_sector_bridge", sector_a, sector_a=sector_a, sector_b=sector_b))
+
+    mutual_aid_sector = _pick_mutual_aid_sector(obs)
+    if mutual_aid_sector is not None and high_pressure and obs.budget_remaining >= 2.5:
+        candidates.append(_with_parameters("request_mutual_aid", mutual_aid_sector, sector=mutual_aid_sector))
+
+    if high_pressure and obs.budget_remaining >= 2.0:
+        candidates.append({"action_type": "multi_sector_lockdown", "target_node_id": None})
+
+    if failed_now and not recover_target:
+        target = min(failed_now, key=lambda n: (n.is_critical, n.health))
+        candidates.append({"action_type": "controlled_cascade", "target_node_id": target.node_id})
 
     # Coordinate only when delayed visibility is present and pressure suggests it is useful.
     if high_pressure:
@@ -1090,10 +1318,15 @@ def _build_candidate_actions(
         candidates.append({"action_type": "wait", "target_node_id": None})
 
     # Deduplicate while preserving order.
-    deduped: List[Dict[str, Optional[str]]] = []
+    prioritize_targets = [n for n in obs.nodes if n.is_critical or n.health < 0.65]
+    if prioritize_targets:
+        prioritize_targets.sort(key=lambda n: (not n.is_critical, n.health))
+        candidates.append({"action_type": "prioritize", "target_node_id": prioritize_targets[0].node_id})
+
+    deduped: List[Dict[str, Any]] = []
     seen = set()
     for a in candidates:
-        sig = (a.get("action_type"), a.get("target_node_id"))
+        sig = _action_signature(a)
         if sig in seen:
             continue
         seen.add(sig)
@@ -1240,8 +1473,8 @@ async def _get_action(
     step: int,
     messages: List[Dict],
     last_reward: float,
-    candidate_actions: List[Dict[str, Optional[str]]],
-    playbook_action: Optional[Dict[str, Optional[str]]] = None,
+    candidate_actions: List[Dict[str, Any]],
+    playbook_action: Optional[Dict[str, Any]] = None,
 ) -> tuple[str, Optional[str]]:
     heuristic_action = smart_heuristic(obs, step)
     critical_emergency = any(
@@ -1269,9 +1502,7 @@ async def _get_action(
 
     # LLM path - single-turn only (no history), to keep context small
     user_prompt = _build_user_prompt(obs, step, last_reward=last_reward)
-    candidate_text = " | ".join(
-        f"{a['action_type']}:{a.get('target_node_id')}" for a in candidate_actions
-    )
+    candidate_text = " | ".join(_format_candidate_action(a) for a in candidate_actions)
     user_prompt = f"{user_prompt}\nLegalActions: {candidate_text}\nChoose ONLY one listed action in exact JSON format."
     # Only send system + current state (no history) to stay well under 16k tokens
     messages_llm = [{"role": "system", "content": SYSTEM_PROMPT},
@@ -1309,15 +1540,27 @@ async def _get_action(
                 "action_type": parsed.get("action_type", "wait"),
                 "target_node_id": parsed.get("target_node_id"),
             }
-            allowed = {
-                (a.get("action_type"), a.get("target_node_id"))
-                for a in candidate_actions
-            }
-            chosen_sig = (chosen.get("action_type"), chosen.get("target_node_id"))
+            if isinstance(parsed.get("parameters"), dict):
+                chosen["parameters"] = parsed["parameters"]
+            allowed = {_action_signature(a): a for a in candidate_actions}
+            chosen_sig = _action_signature(chosen)
 
             if chosen_sig not in allowed:
-                _debug(f"[FILTER] out-of-candidate action {chosen_sig}, fallback={candidate_actions[0]}")
-                chosen = candidate_actions[0]
+                loose_match = next(
+                    (
+                        a for a in candidate_actions
+                        if a.get("action_type") == chosen.get("action_type")
+                        and a.get("target_node_id") == chosen.get("target_node_id")
+                    ),
+                    None,
+                )
+                if loose_match is not None:
+                    chosen = loose_match
+                else:
+                    _debug(f"[FILTER] out-of-candidate action {chosen_sig}, fallback={candidate_actions[0]}")
+                    chosen = candidate_actions[0]
+            else:
+                chosen = allowed[chosen_sig]
 
             return json.dumps(chosen), None
 
@@ -1425,7 +1668,11 @@ async def run_task(
                 action_dict = json.loads(raw_action)
                 action = CascadeAction(**action_dict)
                 # Auto-fill missing target_node_id
-                if action.action_type != "wait" and not action.target_node_id:
+                if (
+                    action.action_type not in {"wait", "multi_sector_lockdown"}
+                    and not action.target_node_id
+                    and action.action_type not in {"reroute", "cross_sector_bridge", "redistribute_load", "request_mutual_aid"}
+                ):
                     if action.action_type == "shed_load":
                         tgt = max(obs.nodes, key=lambda n: n.load)
                     elif action.action_type == "recover":

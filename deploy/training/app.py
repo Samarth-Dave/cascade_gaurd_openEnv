@@ -14,6 +14,7 @@ CHANGELOG vs original:
 """
 
 import os, sys, subprocess, time, threading, math, json, re
+os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 import matplotlib
 matplotlib.use('Agg')  # headless — no display needed
 import matplotlib.pyplot as plt
@@ -41,13 +42,14 @@ MODEL        = 'deepseek-ai/DeepSeek-R1-Distill-Qwen-32B'
 SFT_STEPS    = 150
 GRPO_STEPS   = 120
 STATES       = 64
-GENERATIONS  = 4
+GENERATIONS  = 2
 LORA_R       = 16
 LR_SFT       = 1.5e-5
 LR_GRPO      = 5e-6
-MAX_SEQ_LEN  = 1024
-MAX_COMP_LEN = 256
+MAX_SEQ_LEN  = 512
+MAX_COMP_LEN = 128
 RUN_EVAL     = True
+FORCE_SFT    = False
 
 SFT_SAVE_PATH  = os.path.join(OUTPUT_DIR, 'sft', 'final')
 GRPO_SAVE_PATH = os.path.join(OUTPUT_DIR, 'grpo', 'final')
@@ -65,8 +67,19 @@ for d in [CACHE_DIR, OSM_CACHE]:
     os.makedirs(d, exist_ok=True)
 
 def ensure_output_dirs():
-    for d in [OUTPUT_DIR, CURVES_DIR, SFT_SAVE_PATH]:
+    for d in [OUTPUT_DIR, CURVES_DIR]:
         os.makedirs(d, exist_ok=True)
+
+def is_valid_checkpoint(path):
+    if not os.path.isdir(path):
+        return False
+    has_config = os.path.exists(os.path.join(path, 'config.json'))
+    has_adapter = os.path.exists(os.path.join(path, 'adapter_config.json'))
+    has_tokenizer = any(
+        os.path.exists(os.path.join(path, name))
+        for name in ['tokenizer.json', 'tokenizer_config.json']
+    )
+    return (has_config or has_adapter) and has_tokenizer
 
 # ── Shared state ──────────────────────────────────────────────────────────────
 log_lines     = []
@@ -223,7 +236,7 @@ def patch_train_grpo(train_script: str) -> None:
     The patch is idempotent — running it twice leaves the file unchanged.
     """
     log("-" * 50)
-    log("PATCH — fixing dtype → torch_dtype in train_grpo.py")
+    log("PATCH — applying train_grpo.py compatibility fixes")
 
     with open(train_script, 'r', encoding='utf-8') as fh:
         src = fh.read()
@@ -253,6 +266,19 @@ def patch_train_grpo(train_script: str) -> None:
         "['torch_dtype']",
         src,
     )
+
+    # Exact fix for:
+    #   TypeError: load_model() missing 1 required positional argument:
+    #   'max_seq_length'
+    # Some Space-bundled train_grpo.py versions define load_model(...,
+    # max_seq_length, ...) but main() calls it without forwarding args.max_seq_len.
+    if 'max_seq_length: int' in src and 'max_seq_length=args.max_seq_len' not in src:
+        src = re.sub(
+            r'(\n(?P<indent>\s*)cache_dir=args\.cache_dir,)',
+            lambda m: f"\n{m.group('indent')}max_seq_length=args.max_seq_len,{m.group(1)}",
+            src,
+            count=1,
+        )
 
     # Fix older bundled GRPO scripts whose load_model() signature requires
     # max_seq_length, but whose main() call never forwards args.max_seq_len.
@@ -311,6 +337,49 @@ def patch_train_grpo(train_script: str) -> None:
         flags=re.DOTALL
     )
 
+    # Final guard: the broad SFTTrainer compatibility regexes above can run
+    # across later code in older bundled files, so re-verify the GRPO
+    # load_model(...) call after all other rewrites.
+    def ensure_load_model_max_seq_length(text):
+        pattern = (
+            r'model,\s*tokenizer,\s*peft_config,\s*backend,\s*torch_dtype'
+            r'\s*=\s*load_model\([\s\S]*?\n\s*\)'
+        )
+
+        def fix_call(match):
+            block = match.group(0)
+            if re.search(r'max_seq_length\s*=', block):
+                return block
+            return re.sub(
+                r'(\n(?P<indent>\s*)cache_dir\s*=\s*args\.cache_dir,)',
+                lambda m: f"\n{m.group('indent')}max_seq_length=args.max_seq_len,{m.group(1)}",
+                block,
+                count=1,
+            )
+
+        return re.sub(pattern, fix_call, text, count=1)
+
+    src = ensure_load_model_max_seq_length(src)
+
+    # The SFTTrainer compatibility rewrites must not change this helper call:
+    # run_sft_warmstart() is our function, not TRL's SFTTrainer. Repair the
+    # actual main() call, not the function signature or the SFTTrainer body.
+    src = re.sub(
+        r'run_sft_warmstart\(\s*model\s*=\s*model,\s*(?:processing_class|tokenizer)\s*=\s*tokenizer,\s*train_rows\s*=\s*rows,\s*args\s*=\s*args\s*\)',
+        'run_sft_warmstart(model=model, tokenizer=tokenizer, train_rows=rows, args=args)',
+        src,
+        count=1,
+    )
+
+    load_call_ok = bool(re.search(
+        r'load_model\([\s\S]*?max_seq_length\s*=\s*args\.max_seq_len[\s\S]*?cache_dir\s*=\s*args\.cache_dir',
+        src,
+    ))
+    warmstart_call_ok = bool(re.search(
+        r'run_sft_warmstart\(\s*model\s*=\s*model,\s*tokenizer\s*=\s*tokenizer,\s*train_rows\s*=\s*rows,\s*args\s*=\s*args\s*\)',
+        src,
+    ))
+
     if src == original:
         log("  ℹ️  No train_grpo.py compatibility patch needed (already correct).")
     else:
@@ -319,6 +388,16 @@ def patch_train_grpo(train_script: str) -> None:
         # Count replacements for the log
         n = sum(1 for a, b in zip(original.splitlines(), src.splitlines()) if a != b)
         log(f"  ✅ Patched {n} line(s) in train_grpo.py compatibility fixes.")
+
+    if load_call_ok:
+        log("  ✅ Verified GRPO load_model receives max_seq_length=args.max_seq_len.")
+    else:
+        raise RuntimeError("train_grpo.py patch failed: load_model() still lacks max_seq_length=args.max_seq_len")
+
+    if warmstart_call_ok:
+        log("  ✅ Verified run_sft_warmstart receives tokenizer=tokenizer.")
+    else:
+        raise RuntimeError("train_grpo.py patch failed: run_sft_warmstart() call has the wrong tokenizer keyword")
 
     log("-" * 50)
 
@@ -481,6 +560,7 @@ def run_sft(tokenizer, model, sft_raw):
     log("=" * 60)
     log("STEP 8 — SFT Training (TRL SFTTrainer)")
     log("=" * 60)
+    import gc
     from datasets import Dataset
     from trl import SFTTrainer, SFTConfig
     from transformers import TrainerCallback
@@ -557,6 +637,12 @@ def run_sft(tokenizer, model, sft_raw):
     trainer.save_model(SFT_SAVE_PATH)
     tokenizer.save_pretrained(SFT_SAVE_PATH)
     log("SFT checkpoint saved ✓")
+
+    del trainer, sft_dataset
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
 
     return sft_records
 
@@ -726,6 +812,7 @@ def run_grpo():
         proc.wait()
         if proc.returncode != 0:
             log(f"⚠️ GRPO subprocess exited with code {proc.returncode}")
+            return None
         else:
             log("✅ GRPO training complete.")
     except Exception as e:
@@ -733,6 +820,7 @@ def run_grpo():
         log(f"⚠️ GRPO step error: {e}")
         log(traceback.format_exc())
         log("Skipping GRPO — SFT model will still be pushed.")
+        return None
 
     return grpo_records
 
@@ -818,28 +906,29 @@ def push_to_hub():
         log("⚠️ HF_TOKEN secret not set — skipping Hub push.")
         return
 
-    from huggingface_hub import login
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from huggingface_hub import HfApi, login
 
     login(token=HF_TOKEN)
 
     grpo_final = os.path.join(OUTPUT_DIR, 'grpo', 'final')
-    checkpoint = grpo_final if os.path.isdir(grpo_final) else SFT_SAVE_PATH
-
-    if not os.path.isdir(checkpoint):
-        log(f"⚠️ No checkpoint found at {checkpoint} — skipping push.")
+    if is_valid_checkpoint(grpo_final):
+        checkpoint = grpo_final
+    elif is_valid_checkpoint(SFT_SAVE_PATH):
+        checkpoint = SFT_SAVE_PATH
+    else:
+        log("⚠️ No valid GRPO/SFT checkpoint found — skipping Hub push.")
         return
 
-    log(f"Loading checkpoint from {checkpoint} for hub push ...")
-    tokenizer = AutoTokenizer.from_pretrained(checkpoint, trust_remote_code=True)
-    model     = AutoModelForCausalLM.from_pretrained(
-        checkpoint, device_map='cpu', trust_remote_code=True
-    )
-
     hub_id = "samarthdave0305/cascadeguard-trained"
-    log(f"Pushing to {hub_id} ...")
-    model.push_to_hub(hub_id, token=HF_TOKEN)
-    tokenizer.push_to_hub(hub_id, token=HF_TOKEN)
+    log(f"Uploading checkpoint folder {checkpoint} to {hub_id} ...")
+    api = HfApi(token=HF_TOKEN)
+    api.create_repo(repo_id=hub_id, repo_type='model', exist_ok=True)
+    api.upload_folder(
+        repo_id=hub_id,
+        repo_type='model',
+        folder_path=checkpoint,
+        commit_message='Upload CascadeGuard training checkpoint',
+    )
     log(f"✅ Model pushed to https://huggingface.co/{hub_id}")
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -848,6 +937,7 @@ def push_to_hub():
 def run_training():
     global training_done
     try:
+        import gc
         log("🚀 CascadeGuard training pipeline starting ...")
         verify_gpu()
         install_deps()
@@ -855,18 +945,32 @@ def run_training():
         ensure_output_dirs()
         install_package()
         prewarm_osm()
-        tokenizer, model, sft_raw = load_dataset_and_model()
-        #sft_records  = run_sft(tokenizer, model, sft_raw)
+        if is_valid_checkpoint(SFT_SAVE_PATH) and not FORCE_SFT:
+            log(f"✅ Existing SFT checkpoint found at {SFT_SAVE_PATH} — skipping SFT.")
+            sft_records = []
+        else:
+            tokenizer, model, sft_raw = load_dataset_and_model()
+            sft_records  = run_sft(tokenizer, model, sft_raw)
 
-        #del model
-        #if torch.cuda.is_available():
-         #   torch.cuda.empty_cache()
+            del model, tokenizer, sft_raw
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.ipc_collect()
+                used = torch.cuda.memory_allocated() / 1e9
+                total = torch.cuda.get_device_properties(0).total_memory / 1e9
+                log(f"VRAM after SFT cleanup: {used:.1f} / {total:.1f} GB")
 
         grpo_records = run_grpo()
+        grpo_ok = grpo_records is not None
+        grpo_records = grpo_records or []
         plot_curves(sft_records, grpo_records)
         push_to_hub()
         log("=" * 60)
-        log("🎉 ALL STEPS COMPLETE! Training finished successfully.")
+        if grpo_ok:
+            log("🎉 ALL STEPS COMPLETE! Training finished successfully.")
+        else:
+            log("⚠️ SFT finished, but GRPO failed. Check the GRPO traceback above.")
         log("=" * 60)
     except Exception as e:
         import traceback

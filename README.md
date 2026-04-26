@@ -346,3 +346,53 @@ Could a researcher write a paper about this? Yes — this is a new benchmark in 
 ---
 
 *Built for the Meta OpenEnv Hackathon, April 2026.*
+
+---
+
+## OpenEnv Hackathon Submission Notes
+
+This section is intentionally judge-facing: it maps CascadeGuard directly to the OpenEnv Hackathon evaluation rubric.
+
+### Why CascadeGuard Scores on Environment Innovation
+
+CascadeGuard is not a grid-world clone or a single-system simulator. It is a multi-sector crisis environment where the agent must coordinate power, water, hospital, telecom, and financial-settlement infrastructure under partial observability, delayed telemetry, cyber-physical attack, weather stress, and a finite response budget.
+
+The key novelty is that the agent is rewarded for cross-sector dependency reasoning: protecting a hospital may require hardening power upstream, coordinating delayed water telemetry, rerouting healthy supply, isolating compromised telecom nodes, or spending limited budget on repair acceleration instead of local greedy recovery.
+
+### Training Evidence to Include Before Final Submission
+
+Add final images to [`assets/results/`](./assets/results/) using these filenames:
+
+| Result Asset | README Preview |
+|---|---|
+| `training_loss_curve.png` | `![Training loss](./assets/results/training_loss_curve.png)` |
+| `training_reward_curve.png` | `![Training reward](./assets/results/training_reward_curve.png)` |
+| `baseline_vs_trained_reward.png` | `![Baseline vs trained reward](./assets/results/baseline_vs_trained_reward.png)` |
+| `hospital_uptime_before_after.png` | `![Hospital uptime before/after](./assets/results/hospital_uptime_before_after.png)` |
+| `demo_dashboard.png` | `![Live dashboard](./assets/results/demo_dashboard.png)` |
+
+Suggested captions:
+
+- `training_loss_curve.png`: "SFT loss decreases during LoRA fine-tuning, showing the model learns the action format and environment structure."
+- `training_reward_curve.png`: "GRPO reward over training steps; higher reward corresponds to fewer cascades, better hospital protection, and more budget-aware recovery."
+- `baseline_vs_trained_reward.png`: "Trained policy compared against random/heuristic baseline on the same task split."
+- `hospital_uptime_before_after.png`: "Critical hospital service availability before and after training."
+
+### Current Training Status
+
+- SFT training has completed successfully on the 32B DeepSeek-R1-Distill-Qwen model with LoRA.
+- The SFT adapter checkpoint has been pushed to Hugging Face Hub.
+- GRPO reaches real training but currently needs reduced memory settings on A100 for the 32B model. The training Space now uses smaller GRPO generation settings to avoid CUDA OOM.
+- The README should be updated with final GRPO reward plots once the reduced-memory run completes.
+
+### Final Submission Checklist
+
+- [x] OpenEnv environment and manifest are present.
+- [x] Hugging Face environment Space is linked.
+- [x] Hugging Face training Space is linked.
+- [x] SFT training evidence exists.
+- [ ] Add final GRPO reward plot to `assets/results/training_reward_curve.png`.
+- [ ] Add baseline-vs-trained comparison plot to `assets/results/baseline_vs_trained_reward.png`.
+- [ ] Replace the YouTube placeholder link with the final <2 minute demo video.
+- [ ] Add final blog/slides/video links to the Quick Links table.
+- [ ] Confirm no post-deadline commits are needed after submission.
