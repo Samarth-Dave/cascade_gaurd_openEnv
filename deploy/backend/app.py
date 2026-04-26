@@ -1082,6 +1082,7 @@ async def dataset_stats() -> DatasetStats:
 @app.websocket("/ws/episode/{session_id}")
 async def episode_stream(websocket: WebSocket, session_id: str) -> None:
     await websocket.accept()
+    logger.info("episode_stream connected session=%s", session_id)
     session = await session_manager.get(session_id)
     if session is None:
         try:
@@ -1103,9 +1104,26 @@ async def episode_stream(websocket: WebSocket, session_id: str) -> None:
                 payload={"state": session.current_state.model_dump(mode="json")},
             ).model_dump(mode="json"))
         while True:
-            event = await session.event_queue.get()
-            await websocket.send_json(event.model_dump(mode="json"))
-    except WebSocketDisconnect:
+            try:
+                event = await asyncio.wait_for(session.event_queue.get(), timeout=20.0)
+                await websocket.send_json(event.model_dump(mode="json"))
+            except asyncio.TimeoutError:
+                refreshed = await session_manager.get(session_id)
+                if refreshed is None:
+                    await websocket.close(code=4404)
+                    return
+                payload: Dict[str, Any] = {"heartbeat": True}
+                if refreshed.current_state is not None:
+                    payload["state"] = refreshed.current_state.model_dump(mode="json")
+                await websocket.send_json({
+                    "type": "step_result",
+                    "level": "INFO",
+                    "timestamp": _timestamp(),
+                    "message": "Episode stream heartbeat.",
+                    "payload": payload,
+                })
+    except WebSocketDisconnect as exc:
+        logger.info("episode_stream disconnected session=%s code=%s", session_id, getattr(exc, "code", None))
         return
     except Exception as exc:  # noqa: BLE001
         logger.exception("episode_stream error session=%s: %s", session_id, exc)
