@@ -1,0 +1,46 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# CascadeGuard training Space — requirements.txt
+# Installed by Hugging Face Spaces BEFORE app.py runs.
+#
+# CRITICAL — torch is pinned to torch==2.6.0+cu124:
+#   • HF Space GPU nodes randomly have CUDA 12.9 OR 13.0 drivers.
+#   • Default `pip install torch` gets 2.11+cu130 → fails on CUDA 12.9 nodes.
+#   • cu124 wheels work on ANY driver >= 12.4 (covers both 12.9 and 13.0).
+#   • Python 3.13 (the Space runtime) needs torch >= 2.6.0.
+#   • cu121 wheels stopped at 2.5.1 (no py313 build), so cu124 is the only
+#     option that satisfies BOTH "supports py313" AND "works on driver 12.9".
+# ─────────────────────────────────────────────────────────────────────────────
+
+--extra-index-url https://download.pytorch.org/whl/cu124
+
+# Core ML — pinned for stability
+torch==2.6.0+cu124
+
+# Hugging Face training stack
+gradio>=4.0
+trl>=0.12.0
+transformers>=4.40
+datasets>=4.2
+peft>=0.14
+accelerate>=1.10
+bitsandbytes
+huggingface_hub
+
+# Utilities + plotting
+numpy
+pandas
+matplotlib
+seaborn
+
+# Geo / OSM stack (needed by cascade environment)
+osmnx>=1.9.3
+shapely>=2.0
+geopandas
+networkx>=3.0
+
+# OpenEnv server stack
+fastapi>=0.115
+uvicorn>=0.30
+pydantic>=2.0
+openenv-core[core]>=0.2.2
+httpx

@@ -1846,7 +1846,10 @@ def load_model(
 
         if torch.cuda.is_available():
             mkw["device_map"]  = "auto"
-            mkw["dtype"] = torch_dtype
+            # NOTE: use `torch_dtype` (not `dtype`) — works on transformers 4.x AND 5.x.
+            # The new `dtype=` kwarg is 5.x-only; old Spaces with transformers
+            # 4.48.x raise: TypeError: ... got an unexpected keyword argument 'dtype'
+            mkw["torch_dtype"] = torch_dtype
             try:
                 mkw["quantization_config"] = BitsAndBytesConfig(
                     load_in_4bit=True,
@@ -1857,7 +1860,7 @@ def load_model(
             except Exception as exc:
                 log.warning("  BitsAndBytes unavailable (%s) — loading fp16/bf16.", exc)
         else:
-            mkw["dtype"] = torch.float32
+            mkw["torch_dtype"] = torch.float32
             log.warning("  No GPU detected — training will be very slow.")
 
         mkw = {k: v for k, v in mkw.items() if v is not None}

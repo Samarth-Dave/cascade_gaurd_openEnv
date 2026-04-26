@@ -33,6 +33,7 @@ tags:
 |---|---|
 | 🌐 **Live Environment (HF Space)** | [https://huggingface.co/spaces/samarthdave0305/cascade-failure-env](https://huggingface.co/spaces/samarthdave0305/cascade-failure-env) |
 | 📊 **Training Results & Loss/Reward Plots** | [https://huggingface.co/spaces/samarthdave0305/my-training](https://huggingface.co/spaces/samarthdave0305/my-training) |
+| ▶️ **UI Demo Video (YouTube)** | [https://www.youtube.com/watch?v=REPLACE_WITH_UI_DEMO](https://www.youtube.com/watch?v=REPLACE_WITH_UI_DEMO) |
 | 💻 **GitHub Repository** | [https://github.com/Samarth-Dave/cascade_gaurd_openEnv](https://github.com/Samarth-Dave/cascade_gaurd_openEnv) |
 | 📓 **Training Notebook (Colab)** | See [`training/`](./training/) folder |
 | 🏗️ **Architecture & Env Design** | [CASCADEGUARD_MASTER_README.md](./CASCADEGUARD_MASTER_README.md) |
@@ -68,7 +69,47 @@ Our environment is grounded in the following peer-reviewed work and real-world d
 | [NERC 2003 Blackout Report](https://www.nerc.com/docs/docs/blackout/NERC_Final_Blackout_Report_07_13_04.pdf) | Real cascade sequence used to design our adversarial scenario timeline |
 | [FERC/NERC Texas Event Analysis 2021](https://www.ferc.gov/news-events/news/ferc-nerc-and-regional-entities-staff-report-february-2021-cold-weather-outages) | Cold-weather adversarial scenario + hospital prioritisation reward logic |
 | [Holme & Saramäki, *Physics Reports* 2012](https://doi.org/10.1016/j.physrep.2012.03.001) — Temporal networks | Partially observable telemetry delay model (3-step water signal lag) |
-| [Huang et al., *Nature Communications* 2018](https://doi.org/10.1038/s41467-017-02088-w) — Resilience of interdependent networks | Multi-objective reward: outage-minutes + critical infrastructure (hospital) protection bonus |
+| [Huang et al., *Nature Communications* 2018](https://doi.org/10.1038/s41467-017-02088-w) — Resilience of interdependent networks | Multi-objective reward: outage-minutes + critical infrastructure (hospital) protection bonus 
+## 🌍 Real-World Utility & Deployment Path
+
+### Who Would Use This?
+
+| Stakeholder | Use Case |
+|---|---|
+| National grid operators | Cross-sector cascade risk assessment before planned maintenance |
+| Emergency management agencies | LLM co-pilot for multi-sector incident response |
+| Smart city platforms | Real-time resilience scoring integrated with SCADA dashboards |
+| Insurance & risk firms | Quantify cascade exposure across interconnected infrastructure portfolios |
+| Regulatory bodies (FERC, NERC, Ofgem) | Stress-test infrastructure interdependency under adversarial scenarios |
+
+### Outreach — Operator Engagement
+
+We have contacted **25 real-world infrastructure operators** — including power generation plants, water treatment facilities, hospital facilities management teams, and municipal fire stations — to explain CascadeGuard and explore data collaboration.
+
+Our outreach explains:
+1. How our model simulates their specific failure modes
+2. How anonymised telemetry data from their facilities could replace our hardcoded seeds
+3. How a trained CascadeGuard agent could serve as a cross-sector resilience advisor
+
+*Several operators have indicated interest in providing anonymised operational data for our next training iteration.*
+
+### From Hardcoded to Real Data — The Pipeline
+
+Currently, node positions and failure probabilities are seeded from:
+- NERC 2003 Blackout incident sequence
+- FERC 2021 Texas Cold Weather Event Report
+- Public utility outage databases
+
+**Next step:** Replace hardcoded seeds with real telemetry from partnering operators, enabling the model to generalise from simulation to live infrastructure.
+
+### Academic Impact
+
+The cross-sector cascade benchmark CascadeGuard creates has direct publication potential:
+- Extends L2RPN (cited 500+ times) to multi-sector interdependency
+- Builds on Buldyrev et al. *Nature* 2010 (3,000+ citations) with trainable RL benchmark
+- New benchmark for partially observable multi-agent infrastructure reasoning
+
+> *If you are an infrastructure operator, researcher, or policy organisation interested in collaborating, please open a GitHub issue or email us.*|
 
 **The core insight:** A cross-sector resilience coordinator that is trained via RL on CascadeGuard is, for the first time, learning something that **no existing governance structure** is structurally capable of doing — simultaneous multi-sector dependency reasoning under partial observability.
 
@@ -122,11 +163,15 @@ Edges: **typed interdependency links** — power-dependency, water-dependency, t
 
 ### Task Progression
 
-| Difficulty | Scenario | Key Challenge |
+These are the 5 core tasks used in the training/evaluation curriculum:
+
+| Task ID | Scenario | What It Tests |
 |---|---|---|
-| **Easy** | Single power grid, N-1 contingency | Which lines to pre-harden given a budget |
-| **Medium** | Power + Water + Hospital triad | 3-step observation delay; hospital protection bonus |
-| **Hard** | Full 5-sector graph + simultaneous extreme weather + SCADA cyber attack | 40% partial observability; competing sector incentives |
+| `task_easy` | Single power grid with one critical hospital dependency | Basic outage recovery, early hardening, and budget discipline |
+| `task_medium` | Power + water + hospital triad with storm phases | Delayed telemetry handling and hospital-priority coordination |
+| `task_hard` | Four-sector crisis (power, water, hospital, telecom) with SCADA pressure | Partial observability triage under compound stress |
+| `task_gen_blackout` | Root generator blackout followed by a second fault | Graph-centrality reasoning and dependency-order recovery |
+| `task_cyberattack` | Persistent SCADA anomaly plus stacked physical faults and weather stress | Sustained cyber-physical defense and late-stage budget management |
 
 ---
 
@@ -183,14 +228,15 @@ The React + Vite frontend provides a live interactive interface for the environm
 
 ### UI Screenshots
 
-> 📌 *Add your UI screenshots here by committing images to `assets/screenshots/` and embedding them below:*
+![CascadeGuard Dashboard](./assets/screenshots/dashboard.jpeg)
 
-```markdown
-![CascadeGuard Dashboard](assets/screenshots/dashboard.png)
-![Cascade Propagation View](assets/screenshots/cascade_propagation.png)
-![Sector Health Panel](assets/screenshots/sector_health.png)
-![Reward Curve](assets/screenshots/reward_curve.png)
-```
+![Live Links Panel](./assets/screenshots/live%20links%20on%20the%20ui.jpeg)
+
+![Sector Health Panel](./assets/screenshots/sector_health.jpeg)
+
+![Cascade Dashboard View](./assets/screenshots/dashboard3.jpeg)
+
+▶️ UI demo video (YouTube): [https://www.youtube.com/watch?v=REPLACE_WITH_UI_DEMO](https://www.youtube.com/watch?v=REPLACE_WITH_UI_DEMO)
 
 *The UI automatically falls back to a scripted simulation if the live backend is unreachable, so you can always demo it.*
 
