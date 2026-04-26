@@ -201,7 +201,7 @@ def parse_args() -> argparse.Namespace:
                    help="Learning rate")
     p.add_argument("--max-seq-len", type=int, default=2048)
     p.add_argument("--max-completion-len", type=int, default=32)
-    p.add_argument("--sft-warmstart-steps", type=int, default=180,
+    p.add_argument("--sft-warmstart-steps", type=int, default=0,
                    help="Optional supervised warm-start steps before GRPO (0 disables)")
     p.add_argument("--sft-warmstart-lr", type=float, default=1.5e-5,
                    help="Learning rate for optional SFT warm-start")
