@@ -71,12 +71,14 @@ Open **Settings -> Variables and secrets** and add:
 | Name                     | Type    | When you need it                                                   |
 | ------------------------ | ------- | ------------------------------------------------------------------ |
 | `HF_TOKEN`               | Secret  | Your adapter repo is private, **or** the base model is gated.      |
+| `REQUIRE_CUDA`           | Var     | Set `1` to **refuse** CPU inference (fail if GPU is unusable). Default is off so the app falls back to CPU when the host NVIDIA driver and the PyTorch CUDA build do not match. |
 | `MODEL_NAME`             | Var     | Override the default `samarthdave0305/cascadeguard-trained`.       |
 | `FALLBACK_MODEL_NAME`    | Var     | Override the default `Qwen/Qwen2.5-0.5B-Instruct`.                 |
 | `CASCADE_REPO_URL`       | Var     | If you forked the main repo.                                       |
 
 You don't need any secrets for the default path (public adapter + public
-Qwen base).
+Qwen base). Leave `REQUIRE_CUDA` unset unless you require GPU-only
+inference in production.
 
 ### 1.4 Watch the build logs
 
@@ -88,7 +90,11 @@ First boot does three things — each takes roughly this long on T4:
    Space pushed adapter files only, so the base model pulls first).
 
 Once the logs say `Uvicorn running on http://0.0.0.0:7860` and then
-`Model loaded from … on cuda`, the Space is ready.
+`Model loaded from …` on `cuda` or `cpu`, the Space is ready. A **CPU**
+load is normal when the platform driver is older than the CUDA version
+the installed PyTorch wheel was built for; assign a GPU in Space
+settings and/or pin a matching `torch` + CUDA wheel in `requirements.txt`
+if you need GPU speed.
 
 ---
 

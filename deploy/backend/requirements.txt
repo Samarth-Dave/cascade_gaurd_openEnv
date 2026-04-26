@@ -44,16 +44,19 @@ pillow==10.4.0
 # ---- OpenEnv env base class + light runtime deps ----------------------
 # Do NOT install openenv-core here: HF injects gradio-client 1.3.0, which
 # requires websockets<13, while openenv-core declares websockets>=15.0.1.
-# app.py installs openenv-core at runtime with --no-deps after the HF build
-# resolver is done.
-fastmcp==2.11.3
+# app.py registers the tiny in-process compatibility surface it needs instead
+# of using OpenEnv's websocket server stack.
 requests>=2.31.0
 networkx>=3.0
 
 # ---- LLM inference ----------------------------------------------------
-# torch is huge (~2 GB); we do NOT pin a +cuXXX wheel because HF Spaces
-# selects the correct CUDA build for the assigned GPU tier.
-torch>=2.3.0
+# HF's current Python 3.13 Gradio image can resolve bare `torch` to a CUDA 13
+# wheel (for example torch 2.11.0+cu130). The A100 Spaces host in our logs had
+# an NVIDIA driver exposing CUDA 12.x, so that wheel made
+# torch.cuda.is_available() false even though a GPU was present. Pin a CUDA 12.4
+# wheel at build time instead of trying to hot-swap torch after import.
+--extra-index-url https://download.pytorch.org/whl/cu124
+torch==2.5.1+cu124
 transformers>=4.46.0,<5
 accelerate>=1.0.0
 peft>=0.14.0

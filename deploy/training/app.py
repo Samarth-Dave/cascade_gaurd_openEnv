@@ -202,7 +202,6 @@ def clone_repo():
         'tasks.py',
         'reward.py',
         'geo_utils.py',
-        'adversarial_attacker.py',
         'cascadeguard_sft_dataset.csv',
         'training/__init__.py',
         'training/train_grpo.py',

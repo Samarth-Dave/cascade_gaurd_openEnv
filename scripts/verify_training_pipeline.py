@@ -99,21 +99,7 @@ def test_reward():
 
 check("reward.py grpo_verifier + parse_action", test_reward)
 
-# 6. adversarial BetweennessCentralityAttacker + .think()
-def test_attacker():
-    from cascade_guard.adversarial_attacker import make_attacker
-    from cascade_guard.server.cascade_environment import CascadeEnvironment
-    env = CascadeEnvironment()
-    obs = env.reset(task_id="task_osm_london", seed=42)
-    attacker = make_attacker("betweenness")
-    thought = attacker.think(obs, step=3)
-    assert "betweenness" in thought.lower()
-    assert "Top targets" in thought
-    return f"think() OK, {len(thought)} chars"
-
-check("BetweennessCentralityAttacker.think()", test_attacker)
-
-# 7. Full step loop on OSM task
+# 6. Full step loop on OSM task
 def test_osm_step_loop():
     from cascade_guard.server.cascade_environment import CascadeEnvironment
     from cascade_guard.models import CascadeAction
@@ -130,7 +116,7 @@ def test_osm_step_loop():
 
 check("5-step loop on task_osm_tokyo", test_osm_step_loop)
 
-# 8. /cities endpoint data consistency
+# 7. /cities endpoint data consistency
 def test_cities_data():
     import json
     from pathlib import Path

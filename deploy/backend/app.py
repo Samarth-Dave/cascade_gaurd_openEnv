@@ -45,6 +45,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 import types
 from datetime import datetime, timezone
 from pathlib import Path
@@ -67,6 +68,7 @@ OSM_CACHE = Path("/tmp/osmnx_cache")
 os.environ.setdefault("HF_HOME", str(CACHE_DIR))
 os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(CACHE_DIR))
 os.environ.setdefault("TRANSFORMERS_CACHE", str(CACHE_DIR))
+os.environ.setdefault("PYTHONUNBUFFERED", "1")
 
 for _d in (BASE_DIR, CACHE_DIR, OSM_CACHE):
     _d.mkdir(parents=True, exist_ok=True)
@@ -74,25 +76,20 @@ for _d in (BASE_DIR, CACHE_DIR, OSM_CACHE):
 # Gate verbose transformers logs so the Space logs remain human-readable.
 os.environ.setdefault("TRANSFORMERS_VERBOSITY", "warning")
 
+LOG_LEVEL_NAME = os.getenv("LOG_LEVEL", "INFO").strip().upper()
+LOG_LEVEL = getattr(logging, LOG_LEVEL_NAME, logging.INFO)
+
 logging.basicConfig(
-    level=logging.INFO,
+    level=LOG_LEVEL,
     format="%(asctime)s %(levelname)s %(name)s - %(message)s",
+    stream=sys.stdout,
+    force=True,
 )
 logger = logging.getLogger("cascadeguard.deploy")
 logger.info("CascadeGuard deploy app import started.")
+logger.info("Logging initialized level=%s", LOG_LEVEL_NAME)
 
-RUNTIME_BOOTSTRAP_DEPS = (
-    {
-        "module": "openenv",
-        "requirement": "openenv-core==0.2.3",
-        "no_deps": True,
-    },
-    {
-        "module": "fastmcp",
-        "requirement": "fastmcp==2.11.3",
-        "no_deps": False,
-    },
-)
+RUNTIME_BOOTSTRAP_DEPS: Tuple[Dict[str, Any], ...] = ()
 
 
 def _ensure_runtime_dependency(module_name: str, requirement: str, *, no_deps: bool = False) -> None:
@@ -106,11 +103,10 @@ def _ensure_runtime_dependency(module_name: str, requirement: str, *, no_deps: b
     command = [sys.executable, "-m", "pip", "install", requirement]
     if no_deps:
         command.append("--no-deps")
+    logger.info("Running command: %s", " ".join(command))
     subprocess.run(
         command,
         check=True,
-        capture_output=True,
-        text=True,
         timeout=300,
     )
     logger.info("%s installed successfully.", requirement)
@@ -124,6 +120,63 @@ for _dep in RUNTIME_BOOTSTRAP_DEPS:
     )
 
 
+def _register_openenv_compat_modules() -> None:
+    """Provide only the OpenEnv surface CascadeGuard needs in-process.
+
+    The real OpenEnv server package pulls a websocket stack that conflicts with
+    Gradio 4.44's pinned gradio-client on Spaces. The deploy backend never uses
+    OpenEnv networking; it only needs model base classes and an Environment
+    superclass so the cloned project modules can import.
+    """
+    try:
+        from pydantic import BaseModel, ConfigDict  # noqa: PLC0415
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not register OpenEnv compatibility stubs: %s", exc)
+        return
+
+    class Action(BaseModel):
+        model_config = ConfigDict(extra="allow", arbitrary_types_allowed=True)
+        metadata: Dict[str, Any] = {}
+
+    class Observation(BaseModel):
+        model_config = ConfigDict(extra="allow", arbitrary_types_allowed=True)
+        done: bool = False
+        reward: float = 0.0
+        metadata: Dict[str, Any] = {}
+
+    class State(BaseModel):
+        model_config = ConfigDict(extra="allow", arbitrary_types_allowed=True)
+        episode_id: str = ""
+        step_count: int = 0
+
+    class Environment:
+        """No-op superclass used by CascadeEnvironment in deploy mode."""
+
+        pass
+
+    openenv_pkg = sys.modules.get("openenv") or types.ModuleType("openenv")
+    core_pkg = sys.modules.get("openenv.core") or types.ModuleType("openenv.core")
+    env_server_pkg = sys.modules.get("openenv.core.env_server") or types.ModuleType("openenv.core.env_server")
+    types_pkg = sys.modules.get("openenv.core.env_server.types") or types.ModuleType("openenv.core.env_server.types")
+
+    openenv_pkg.__path__ = getattr(openenv_pkg, "__path__", [])  # type: ignore[attr-defined]
+    core_pkg.__path__ = getattr(core_pkg, "__path__", [])  # type: ignore[attr-defined]
+    env_server_pkg.__path__ = getattr(env_server_pkg, "__path__", [])  # type: ignore[attr-defined]
+
+    env_server_pkg.Environment = Environment  # type: ignore[attr-defined]
+    types_pkg.Action = Action  # type: ignore[attr-defined]
+    types_pkg.Observation = Observation  # type: ignore[attr-defined]
+    types_pkg.State = State  # type: ignore[attr-defined]
+    core_pkg.env_server = env_server_pkg  # type: ignore[attr-defined]
+    openenv_pkg.core = core_pkg  # type: ignore[attr-defined]
+
+    sys.modules["openenv"] = openenv_pkg
+    sys.modules["openenv.core"] = core_pkg
+    sys.modules["openenv.core.env_server"] = env_server_pkg
+    sys.modules["openenv.core.env_server.types"] = types_pkg
+    logger.info("OpenEnv compatibility modules registered for in-process deploy mode.")
+
+
 # ---------------------------------------------------------------------------
 # Step 1 — clone (or pull) the project repo so we can import the env.
 # ---------------------------------------------------------------------------
@@ -135,8 +188,6 @@ def _ensure_repo() -> Path:
             subprocess.run(
                 ["git", "-C", str(REPO_DIR), "pull", "--ff-only"],
                 check=False,
-                capture_output=True,
-                text=True,
                 timeout=120,
             )
         except Exception as exc:  # noqa: BLE001
@@ -147,8 +198,6 @@ def _ensure_repo() -> Path:
     subprocess.run(
         ["git", "clone", "--depth", "1", REPO_URL, str(REPO_DIR)],
         check=True,
-        capture_output=True,
-        text=True,
         timeout=300,
     )
     return REPO_DIR
@@ -180,6 +229,11 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 if str(REPO_DIR) not in sys.path:
     sys.path.insert(0, str(REPO_DIR))
+
+# Register this before importing cloned project modules. In particular,
+# `models.py` imports `openenv.core.env_server.types`, and
+# `server/cascade_environment.py` imports `openenv.core.env_server.Environment`.
+_register_openenv_compat_modules()
 
 # Importing ``cascade_guard.models`` normally executes the repo root
 # ``__init__.py`` first, and that imports ``client.py``. The client path needs
@@ -276,6 +330,11 @@ class LlmClient:
         self.model_name = (os.getenv("MODEL_NAME") or "samarthdave0305/cascadeguard-trained").strip()
         self.fallback_name = (os.getenv("FALLBACK_MODEL_NAME") or "Qwen/Qwen2.5-0.5B-Instruct").strip()
         self.hf_token = os.getenv("HF_TOKEN") or None
+        # Default 0: Hugging Face Spaces often ship a PyTorch CUDA wheel that
+        # is newer than the host NVIDIA driver, so torch.cuda.is_available() is
+        # False. With REQUIRE_CUDA=1 the model never loads and agent-step 503s.
+        # Set REQUIRE_CUDA=1 if you will only ever run on a healthy GPU+driver match.
+        self.require_cuda = os.getenv("REQUIRE_CUDA", "0").strip().lower() in {"1", "true", "yes"}
         self.device: str = "cpu"
         self._torch = None
         self._model = None
@@ -284,6 +343,9 @@ class LlmClient:
         self._load_state: str = LOAD_STATE_IDLE
         self._load_error: Optional[str] = None
         self._load_lock = threading.Lock()
+        self._load_started_at: Optional[float] = None
+        self._load_finished_at: Optional[float] = None
+        self._last_progress_log_at: float = 0.0
 
     # -- state ---------------------------------------------------------
     @property
@@ -294,8 +356,73 @@ class LlmClient:
     def load_error(self) -> Optional[str]:
         return self._load_error
 
+    @property
+    def loaded_source(self) -> Optional[str]:
+        return self._loaded_source
+
+    def load_elapsed_seconds(self) -> Optional[float]:
+        with self._load_lock:
+            started = self._load_started_at
+            finished = self._load_finished_at
+            state = self._load_state
+        if started is None:
+            return None
+        if finished is not None:
+            return round(max(0.0, finished - started), 3)
+        if state == LOAD_STATE_LOADING:
+            return round(max(0.0, time.monotonic() - started), 3)
+        return None
+
+    def maybe_log_loading_progress(self, every_seconds: float = 15.0) -> None:
+        now = time.monotonic()
+        with self._load_lock:
+            if self._load_state != LOAD_STATE_LOADING or self._load_started_at is None:
+                return
+            if now - self._last_progress_log_at < every_seconds:
+                return
+            self._last_progress_log_at = now
+            elapsed = round(max(0.0, now - self._load_started_at), 2)
+            target = self.model_name
+            fallback = self.fallback_name
+        logger.info(
+            "Model loading in progress (elapsed=%.2fs target=%s fallback=%s cache=%s)",
+            elapsed,
+            target,
+            fallback,
+            CACHE_DIR,
+        )
+
     def is_loaded(self) -> bool:
         return self._model is not None and self._tokenizer is not None
+
+    def _log_torch_runtime(self, torch_module: Any) -> None:
+        cuda_visible = os.getenv("CUDA_VISIBLE_DEVICES", "<unset>")
+        cuda_available = bool(torch_module.cuda.is_available())
+        cuda_build = getattr(torch_module.version, "cuda", None)
+        try:
+            device_count = int(torch_module.cuda.device_count()) if cuda_available else 0
+        except Exception:  # noqa: BLE001
+            device_count = 0
+        device_names: List[str] = []
+        if cuda_available and device_count > 0:
+            for idx in range(device_count):
+                try:
+                    device_names.append(str(torch_module.cuda.get_device_name(idx)))
+                except Exception:  # noqa: BLE001
+                    device_names.append(f"cuda:{idx}")
+        logger.info(
+            "Torch runtime: torch=%s cuda_build=%s cuda_available=%s device_count=%s devices=%s CUDA_VISIBLE_DEVICES=%s",
+            torch_module.__version__,
+            cuda_build,
+            cuda_available,
+            device_count,
+            device_names if device_names else ["<none>"],
+            cuda_visible,
+        )
+        if not cuda_available:
+            logger.warning(
+                "CUDA is not available; model will run on CPU. If this Space should use GPU, verify Space hardware assignment and torch CUDA wheel compatibility."
+            )
 
     # -- load ----------------------------------------------------------
     def _try_load(self, source: str) -> None:
@@ -304,8 +431,13 @@ class LlmClient:
         from transformers import AutoModelForCausalLM, AutoTokenizer  # noqa: PLC0415
 
         self._torch = torch
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self._log_torch_runtime(torch)
+        cuda_available = bool(torch.cuda.is_available())
+        if self.require_cuda and not cuda_available:
+            raise RuntimeError("REQUIRE_CUDA=1 but torch.cuda.is_available() is False")
+        self.device = "cuda" if cuda_available else "cpu"
         dtype = torch.float16 if self.device == "cuda" else torch.float32
+        logger.info("Selected inference device=%s dtype=%s", self.device, dtype)
 
         # Decide adapter vs full model by probing the repo.
         adapter_base: Optional[str] = self._resolve_adapter_base(source)
@@ -314,12 +446,31 @@ class LlmClient:
             logger.info("Detected PEFT adapter at %s (base=%s).", source, adapter_base)
             from peft import PeftModel  # noqa: PLC0415
 
-            tokenizer = AutoTokenizer.from_pretrained(
-                adapter_base,
-                trust_remote_code=True,
-                token=self.hf_token,
-                cache_dir=str(CACHE_DIR),
-            )
+            # Prefer tokenizer artifacts from the adapter repo (if present),
+            # then fall back to the base model tokenizer.
+            try:
+                logger.info("Loading tokenizer from adapter repo: %s", source)
+                tokenizer = AutoTokenizer.from_pretrained(
+                    source,
+                    trust_remote_code=True,
+                    token=self.hf_token,
+                    cache_dir=str(CACHE_DIR),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.info(
+                    "Adapter tokenizer load from %s failed (%s); using base tokenizer %s.",
+                    source,
+                    exc,
+                    adapter_base,
+                )
+                logger.info("Loading tokenizer from base model: %s", adapter_base)
+                tokenizer = AutoTokenizer.from_pretrained(
+                    adapter_base,
+                    trust_remote_code=True,
+                    token=self.hf_token,
+                    cache_dir=str(CACHE_DIR),
+                )
+            logger.info("Loading base model weights from: %s", adapter_base)
             base = AutoModelForCausalLM.from_pretrained(
                 adapter_base,
                 torch_dtype=dtype,
@@ -328,22 +479,26 @@ class LlmClient:
                 token=self.hf_token,
                 cache_dir=str(CACHE_DIR),
             )
+            logger.info("Applying adapter weights from: %s", source)
             model = PeftModel.from_pretrained(base, source, token=self.hf_token)
             # ``merge_and_unload`` makes inference ~15-20% faster by folding
             # LoRA into the base weights; skip it if the base is 4-bit
             # because bitsandbytes doesn't support merge.
             try:
+                logger.info("Merging adapter into base model for faster inference...")
                 model = model.merge_and_unload()
             except Exception as exc:  # noqa: BLE001
                 logger.info("LoRA merge skipped: %s", exc)
         else:
             logger.info("Loading %s as a full model.", source)
+            logger.info("Loading tokenizer from model repo: %s", source)
             tokenizer = AutoTokenizer.from_pretrained(
                 source,
                 trust_remote_code=True,
                 token=self.hf_token,
                 cache_dir=str(CACHE_DIR),
             )
+            logger.info("Loading model weights from model repo: %s", source)
             model = AutoModelForCausalLM.from_pretrained(
                 source,
                 torch_dtype=dtype,
@@ -353,6 +508,7 @@ class LlmClient:
                 cache_dir=str(CACHE_DIR),
             )
 
+        logger.info("Moving model to device=%s and switching to eval mode...", self.device)
         model.to(self.device)
         model.eval()
         if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
@@ -390,12 +546,27 @@ class LlmClient:
                 return self._loaded_source or self.model_name
             self._load_state = LOAD_STATE_LOADING
             self._load_error = None
+            self._load_started_at = time.monotonic()
+            self._load_finished_at = None
+            self._last_progress_log_at = 0.0
 
         for candidate in (self.model_name, self.fallback_name):
             if not candidate:
                 continue
             try:
+                logger.info("Attempting model load candidate=%s", candidate)
                 self._try_load(candidate)
+                if candidate != self.model_name:
+                    logger.warning(
+                        "Primary model unavailable; serving fallback model %s (primary=%s).",
+                        candidate,
+                        self.model_name,
+                    )
+                else:
+                    logger.info("Serving primary model %s.", candidate)
+                elapsed = self.load_elapsed_seconds()
+                if elapsed is not None:
+                    logger.info("Model load completed in %.2fs.", elapsed)
                 return candidate
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Model load from %s failed: %s", candidate, exc)
@@ -405,6 +576,7 @@ class LlmClient:
 
         with self._load_lock:
             self._load_state = LOAD_STATE_ERROR
+            self._load_finished_at = time.monotonic()
         logger.error("All candidate models failed; agent-step will return 503.")
         raise RuntimeError(self._load_error or "No model could be loaded.")
 
@@ -432,19 +604,47 @@ class LlmClient:
         if not self.is_loaded():
             raise RuntimeError("Model is not loaded.")
 
+        logger.info(
+            "Running inference with loaded_source=%s device=%s state=%s",
+            self._loaded_source,
+            self.device,
+            self._load_state,
+        )
+
         # Late import so a partial boot (no training repo cloned) doesn't
         # blow up at module import time.
         from training.cot_prompt import build_system_prompt, build_user_prompt  # noqa: PLC0415
 
         obs = _obs_namespace(raw_observation)
+        user_prompt = (
+            build_user_prompt(obs)
+            + "\n\nFINAL OUTPUT RULE: output exactly one XML action tag and nothing else, "
+            "for example <action>recover(POWER_GEN_1)</action> or <action>wait(null)</action>."
+        )
         messages = [
-            {"role": "system", "content": build_system_prompt()},
-            {"role": "user", "content": build_user_prompt(obs)},
+            {"role": "system", "content": build_system_prompt(grpo_mode=True, action_only=True)},
+            {"role": "user", "content": user_prompt},
         ]
         content = await asyncio.to_thread(self._generate, messages)
         logger.info("Raw model output: %s", content[:200].replace("\n", " | "))
         thinking = _extract_tag(content, "think")
+        has_action_tag = _has_action_tag(content)
         action_type, target, parameters = _parse_action(content)
+        if not has_action_tag:
+            action_type, target, parameters = _repair_missing_action(content, raw_observation)
+            logger.warning(
+                "Model omitted <action> tag; repaired action from text/observation: type=%s target=%s parameters=%s",
+                action_type,
+                target,
+                parameters,
+            )
+        logger.info(
+            "Parsed model action: type=%s target=%s parameters=%s has_action_tag=%s",
+            action_type,
+            target,
+            parameters,
+            has_action_tag,
+        )
         return {
             "action": action_type,
             "target": target,
@@ -528,9 +728,31 @@ def _extract_tag(content: str, tag: str) -> str:
     return ""
 
 
+def _has_action_tag(content: str) -> bool:
+    return bool(re.search(r"<action>\s*[a-zA-Z_]+\([^)]*\)\s*</action>", content, re.IGNORECASE))
+
+
 _TWO_NODE_ACTIONS = {"reroute", "redistribute_load"}
 _TWO_SECTOR_ACTIONS = {"cross_sector_bridge"}
 _SECTOR_ACTIONS = {"request_mutual_aid"}
+_LEGAL_ACTIONS = {
+    "harden",
+    "recover",
+    "isolate",
+    "shed_load",
+    "coordinate",
+    "wait",
+    "reroute",
+    "prioritize",
+    "deploy_repair_crew",
+    "emergency_shutdown",
+    "cross_sector_bridge",
+    "patch_scada",
+    "redistribute_load",
+    "request_mutual_aid",
+    "controlled_cascade",
+    "multi_sector_lockdown",
+}
 
 
 def _parse_action(content: str) -> Tuple[str, Optional[str], Dict[str, Any]]:
@@ -562,6 +784,196 @@ def _parse_action(content: str) -> Tuple[str, Optional[str], Dict[str, Any]]:
         parameters = {"sector": parts[0]}
         primary = parts[0]
     return action_type, primary, parameters
+
+
+def _repair_missing_action(content: str, raw_observation: Dict[str, Any]) -> Tuple[str, Optional[str], Dict[str, Any]]:
+    """Recover a legal action when the model explains but omits XML.
+
+    DeepSeek-R1-style models often produce prose even under action-only prompts.
+    The env step loop should not degrade to wait every time that happens, so we
+    infer a conservative legal action from the model's words plus live state.
+    """
+    lowered = content.lower()
+    mentioned = [action for action in _LEGAL_ACTIONS if re.search(rf"\b{re.escape(action)}\b", lowered)]
+    nodes = _observation_nodes(raw_observation)
+    node_ids = [str(node.get("node_id")) for node in nodes if node.get("node_id")]
+    mentioned_node = next((node_id for node_id in node_ids if node_id.lower() in lowered), None)
+
+    if "harden" in mentioned or "harden now" in lowered:
+        target = mentioned_node or _pick_harden_target(raw_observation)
+        if target:
+            return "harden", target, {}
+    if "recover" in mentioned or "repair" in lowered:
+        target = mentioned_node or _pick_recover_target(raw_observation)
+        if target:
+            return "recover", target, {}
+    if "isolate" in mentioned:
+        target = mentioned_node or _first_active_failure(raw_observation)
+        if target:
+            return "isolate", target, {}
+    if "coordinate" in mentioned:
+        target = mentioned_node or _pick_coordinate_target(raw_observation)
+        if target:
+            return "coordinate", target, {}
+    if "shed_load" in mentioned or "shed load" in lowered:
+        target = mentioned_node or _pick_shed_load_target(raw_observation)
+        if target:
+            return "shed_load", target, {}
+    if "patch_scada" in mentioned or "patch scada" in lowered or "scada" in lowered:
+        target = mentioned_node or _pick_scada_target(raw_observation)
+        if target:
+            return "patch_scada", target, {}
+    if "prioritize" in mentioned:
+        target = mentioned_node or _pick_priority_target(raw_observation)
+        if target:
+            return "prioritize", target, {}
+
+    return _policy_action_from_observation(raw_observation)
+
+
+def _policy_action_from_observation(raw_observation: Dict[str, Any]) -> Tuple[str, Optional[str], Dict[str, Any]]:
+    recover_target = _pick_recover_target(raw_observation)
+    if recover_target:
+        return "recover", recover_target, {}
+
+    if _storm_pressure(raw_observation):
+        harden_target = _pick_harden_target(raw_observation)
+        if harden_target:
+            return "harden", harden_target, {}
+
+    coordinate_target = _pick_coordinate_target(raw_observation)
+    if coordinate_target:
+        return "coordinate", coordinate_target, {}
+
+    shed_target = _pick_shed_load_target(raw_observation)
+    if shed_target:
+        return "shed_load", shed_target, {}
+
+    return "wait", None, {}
+
+
+def _observation_nodes(raw_observation: Dict[str, Any]) -> List[Dict[str, Any]]:
+    return [node for node in raw_observation.get("nodes", []) if isinstance(node, dict)]
+
+
+def _first_active_failure(raw_observation: Dict[str, Any]) -> Optional[str]:
+    failures = raw_observation.get("active_failures") or []
+    return str(failures[0]) if failures else None
+
+
+def _pick_recover_target(raw_observation: Dict[str, Any]) -> Optional[str]:
+    failures = {str(node_id) for node_id in raw_observation.get("active_failures", [])}
+    nodes = _observation_nodes(raw_observation)
+    failed_nodes = [
+        node for node in nodes
+        if str(node.get("node_id")) in failures or not bool(node.get("is_operational", True))
+    ]
+    if not failed_nodes:
+        return None
+    failed_nodes.sort(
+        key=lambda node: (
+            bool(node.get("is_critical", False)),
+            _sector_priority(str(node.get("sector", ""))),
+            -float(node.get("health", 0.0)),
+        ),
+        reverse=True,
+    )
+    return str(failed_nodes[0].get("node_id"))
+
+
+def _pick_harden_target(raw_observation: Dict[str, Any]) -> Optional[str]:
+    budget = float(raw_observation.get("budget_remaining", 0.0))
+    if budget < 2.0:
+        return None
+    candidates = [
+        node for node in _observation_nodes(raw_observation)
+        if bool(node.get("is_operational", True)) and not bool(node.get("is_hardened", False))
+    ]
+    if not candidates:
+        return None
+    candidates.sort(
+        key=lambda node: (
+            bool(node.get("is_critical", False)),
+            _sector_priority(str(node.get("sector", ""))),
+            float(node.get("load", 0.0)),
+            float(node.get("health", 0.0)),
+        ),
+        reverse=True,
+    )
+    return str(candidates[0].get("node_id"))
+
+
+def _pick_coordinate_target(raw_observation: Dict[str, Any]) -> Optional[str]:
+    candidates = [
+        node for node in _observation_nodes(raw_observation)
+        if bool(node.get("observation_delayed", False))
+        or float(node.get("observation_confidence", 1.0)) < 0.75
+    ]
+    if not candidates:
+        return None
+    candidates.sort(
+        key=lambda node: (
+            bool(node.get("is_critical", False)),
+            1.0 - float(node.get("observation_confidence", 1.0)),
+        ),
+        reverse=True,
+    )
+    return str(candidates[0].get("node_id"))
+
+
+def _pick_shed_load_target(raw_observation: Dict[str, Any]) -> Optional[str]:
+    candidates = [
+        node for node in _observation_nodes(raw_observation)
+        if not bool(node.get("is_critical", False)) and float(node.get("load", 0.0)) > 0.5
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda node: float(node.get("load", 0.0)), reverse=True)
+    return str(candidates[0].get("node_id"))
+
+
+def _pick_scada_target(raw_observation: Dict[str, Any]) -> Optional[str]:
+    diagnostics = raw_observation.get("diagnostics") or {}
+    if isinstance(diagnostics, dict):
+        for key in ("critical_failures", "at_risk_nodes"):
+            values = diagnostics.get(key) or []
+            if values:
+                return str(values[0])
+    return _pick_priority_target(raw_observation)
+
+
+def _pick_priority_target(raw_observation: Dict[str, Any]) -> Optional[str]:
+    candidates = _observation_nodes(raw_observation)
+    if not candidates:
+        return None
+    candidates.sort(
+        key=lambda node: (
+            bool(node.get("is_critical", False)),
+            _sector_priority(str(node.get("sector", ""))),
+            1.0 - float(node.get("health", 1.0)),
+        ),
+        reverse=True,
+    )
+    return str(candidates[0].get("node_id"))
+
+
+def _storm_pressure(raw_observation: Dict[str, Any]) -> bool:
+    weather = str(raw_observation.get("weather_forecast", "")).lower()
+    upcoming = str(raw_observation.get("upcoming_stress_level", "")).lower()
+    phase = str(raw_observation.get("narrative_phase", "")).lower()
+    info = str(raw_observation.get("info", "")).lower()
+    return (
+        "storm" in weather
+        or upcoming in {"soon", "imminent"}
+        or phase in {"pre_storm", "storm_onset"}
+        or "harden now" in info
+        or "stress" in info
+    )
+
+
+def _sector_priority(sector: str) -> int:
+    order = {"hospital": 5, "power": 4, "water": 3, "telecom": 2}
+    return order.get(sector.lower(), 1)
 
 
 # ---------------------------------------------------------------------------
@@ -750,6 +1162,10 @@ DEFAULT_RADIUS_BY_SECTOR = {
     "power": 35.0, "water": 20.0, "hospital": 8.0, "telecom": 100.0, "ai": 5.0,
 }
 _FALLBACK_GEO_INDEX: Dict[str, int] = {}
+ABANDON_CLIENTS_ON_RESET = os.getenv("ABANDON_CLIENTS_ON_RESET", "0").strip().lower() in {
+    "1", "true", "yes",
+}
+EPISODE_STREAM_IDLE_TTL_S = float(os.getenv("EPISODE_STREAM_IDLE_TTL_S", "20"))
 
 
 def _load_real_node_lookups() -> Dict[str, Dict[str, Dict[str, Any]]]:
@@ -844,6 +1260,14 @@ async def on_startup() -> None:
         logger.info("Model preload kicked off in background.")
     else:
         logger.info("Model preload disabled; first agent-step will start loading.")
+    logger.info(
+        "Model config primary=%s fallback=%s hf_token_set=%s require_cuda=%s",
+        llm_client.model_name,
+        llm_client.fallback_name,
+        bool(llm_client.hf_token),
+        llm_client.require_cuda,
+    )
+    logger.info("Episode stream idle TTL set to %.1fs.", EPISODE_STREAM_IDLE_TTL_S)
     logger.info("FastAPI startup complete; serving traffic now.")
 
 
@@ -857,6 +1281,7 @@ async def on_shutdown() -> None:
 # ---------------------------------------------------------------------------
 @app.get("/api/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
+    llm_client.maybe_log_loading_progress()
     return HealthResponse(
         status="ok",
         env_connected=True,
@@ -871,9 +1296,20 @@ async def reset_episode(payload: EpisodeResetRequest) -> EpisodeResetResponse:
     requested_task = payload.task
     env_task = TASK_ALIASES.get(requested_task, requested_task)
 
-    abandoned = await _abandon_active_clients()
-    if abandoned:
-        logger.info("Reset: closed %s stale env handles.", abandoned)
+    if ABANDON_CLIENTS_ON_RESET:
+        abandoned = await _abandon_active_clients()
+        if abandoned:
+            logger.info("Reset: closed %s stale env handles.", abandoned)
+
+    # Kick off model loading early so health transitions to loading/ready even
+    # before the first agent-step call.
+    if not llm_client.is_loaded() and llm_client.load_state in {LOAD_STATE_IDLE, LOAD_STATE_ERROR}:
+        llm_client.ensure_model_loading()
+        logger.info(
+            "Triggered background model loading during reset (target=%s state=%s).",
+            llm_client.model_name,
+            llm_client.load_state,
+        )
 
     episode_env = InProcessEnv()
     try:
@@ -932,6 +1368,12 @@ async def agent_step(payload: Dict[str, str]) -> StepResult:
                 "load_error": llm_client.load_error,
             },
         )
+    logger.info(
+        "agent-step session=%s model_source=%s load_state=%s",
+        session_id,
+        llm_client.loaded_source,
+        llm_client.load_state,
+    )
     session = await _require_session(session_id)
     decision = await llm_client.get_action(session.raw_observation)
     raw_action = str(decision["action"])
@@ -1105,7 +1547,10 @@ async def episode_stream(websocket: WebSocket, session_id: str) -> None:
             ).model_dump(mode="json"))
         while True:
             try:
-                event = await asyncio.wait_for(session.event_queue.get(), timeout=20.0)
+                event = await asyncio.wait_for(
+                    session.event_queue.get(),
+                    timeout=EPISODE_STREAM_IDLE_TTL_S,
+                )
                 await websocket.send_json(event.model_dump(mode="json"))
             except asyncio.TimeoutError:
                 refreshed = await session_manager.get(session_id)
@@ -1119,7 +1564,7 @@ async def episode_stream(websocket: WebSocket, session_id: str) -> None:
                     "type": "step_result",
                     "level": "INFO",
                     "timestamp": _timestamp(),
-                    "message": "Episode stream heartbeat.",
+                    "message": f"Episode stream heartbeat (ttl={EPISODE_STREAM_IDLE_TTL_S:.0f}s).",
                     "payload": payload,
                 })
     except WebSocketDisconnect as exc:

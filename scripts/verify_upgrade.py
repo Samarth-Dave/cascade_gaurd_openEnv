@@ -8,20 +8,17 @@ PACKAGE_PARENT = REPO_ROOT.parent
 try:
     from cascade_guard.tasks import TASK_CONFIGS
     from cascade_guard.reward import compute_reward, grpo_verifier
-    from cascade_guard.adversarial_attacker import make_attacker
 except ModuleNotFoundError:
     if str(PACKAGE_PARENT) not in sys.path:
         sys.path.insert(0, str(PACKAGE_PARENT))
     try:
         from cascade_guard.tasks import TASK_CONFIGS
         from cascade_guard.reward import compute_reward, grpo_verifier
-        from cascade_guard.adversarial_attacker import make_attacker
     except ModuleNotFoundError:
         if str(REPO_ROOT) not in sys.path:
             sys.path.insert(0, str(REPO_ROOT))
         from tasks import TASK_CONFIGS
         from reward import compute_reward, grpo_verifier
-        from adversarial_attacker import make_attacker
 
 osm = [t for t in TASK_CONFIGS if t.startswith("task_osm")]
 base = [t for t in TASK_CONFIGS if not t.startswith("task_osm")]
@@ -44,10 +41,6 @@ for t in osm:
 print()
 print("reward.py import check:", end=" ")
 print("OK")
-
-print("adversarial_attacker import check:", end=" ")
-a = make_attacker("betweenness")
-print(f"OK ({type(a).__name__})")
 
 print()
 print("ALL CHECKS PASSED")
