@@ -30,36 +30,54 @@ const clamp = (value: number, min: number, max: number) =>
 const asNumber = (value: unknown, fallback: number) =>
   typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 
+const asOptionalNumber = (value: unknown): number | undefined => {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
+};
+
 const asString = (value: unknown, fallback = '') =>
   typeof value === 'string' ? value : fallback;
 
 const asStringArray = (value: unknown) =>
   Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
 
-const asNode = (node: CGNode, pendingRecoveries: string[]): CGNode => ({
-  node_id: asString(node.node_id),
-  sector: (asString(node.sector, 'power') as CGNode['sector']),
-  health: asNumber(node.health, 1),
-  load: asNumber(node.load, 0),
-  is_operational: typeof node.is_operational === 'boolean' ? node.is_operational : true,
-  is_hardened: typeof node.is_hardened === 'boolean' ? node.is_hardened : false,
+const asNode = (node: CGNode, pendingRecoveries: string[]): CGNode => {
+  const source = node as unknown as Record<string, unknown>;
+  const lat = asOptionalNumber(source.lat) ?? asOptionalNumber(source.latitude);
+  const lon =
+    asOptionalNumber(source.lon) ??
+    asOptionalNumber(source.lng) ??
+    asOptionalNumber(source.longitude);
+
+  return {
+    node_id: asString(source.node_id),
+    sector: (asString(source.sector, 'power') as CGNode['sector']),
+    health: asNumber(source.health, 1),
+    load: asNumber(source.load, 0),
+    is_operational: typeof source.is_operational === 'boolean' ? source.is_operational : true,
+    is_hardened: typeof source.is_hardened === 'boolean' ? source.is_hardened : false,
   in_recovery:
-    typeof node.in_recovery === 'boolean'
-      ? node.in_recovery
-      : pendingRecoveries.includes(asString(node.node_id)),
-  is_critical: typeof node.is_critical === 'boolean' ? node.is_critical : false,
-  lat: typeof node.lat === 'number' ? node.lat : undefined,
-  lon: typeof node.lon === 'number' ? node.lon : undefined,
-  real_name: typeof node.real_name === 'string' ? node.real_name : undefined,
+      typeof source.in_recovery === 'boolean'
+        ? source.in_recovery
+        : pendingRecoveries.includes(asString(source.node_id)),
+    is_critical: typeof source.is_critical === 'boolean' ? source.is_critical : false,
+    lat,
+    lon,
+    real_name: typeof source.real_name === 'string' ? source.real_name : undefined,
   observation_delayed:
-    typeof node.observation_delayed === 'boolean' ? node.observation_delayed : undefined,
+      typeof source.observation_delayed === 'boolean' ? source.observation_delayed : undefined,
   service_radius_km:
-    typeof node.service_radius_km === 'number' ? node.service_radius_km : undefined,
+      asOptionalNumber(source.service_radius_km),
   observation_confidence:
-    typeof node.observation_confidence === 'number' ? node.observation_confidence : undefined,
+      asOptionalNumber(source.observation_confidence),
   coverage_quality:
-    typeof node.coverage_quality === 'number' ? node.coverage_quality : undefined,
-});
+      asOptionalNumber(source.coverage_quality),
+  };
+};
 
 const asEdge = (edge: CGEdge, failedSet: Set<string>): CGEdge | null => {
   const source_id = asString(edge.source_id);
@@ -91,21 +109,53 @@ export const normalizeObservation = (obs: CGObservation): CGObservation => {
       }
     : DEFAULT_DIAGNOSTICS;
 
+  // ── Bug 4 fix: normalize nodes FIRST so we can compute sector averages from them ──
+  // This gives us a reliable fallback when the backend sector_summary is missing, null,
+  // or uses different key names than expected.
+  const normalizedNodes = Array.isArray(obs.nodes)
+    ? obs.nodes
+        .map((node) => asNode(node, pending_recoveries))
+        .filter((node) => node.node_id.length > 0)
+    : [];
+
+  // Compute per-sector average health from nodes (0-1 range, clamped)
+  const nodeSectorTotals: Record<string, number[]> = {};
+  for (const node of normalizedNodes) {
+    if (node.sector) {
+      if (!nodeSectorTotals[node.sector]) nodeSectorTotals[node.sector] = [];
+      nodeSectorTotals[node.sector].push(node.health);
+    }
+  }
+  const nodeAvgForSector = (sector: string): number => {
+    const vals = nodeSectorTotals[sector];
+    if (!vals || vals.length === 0) return 1; // fallback: assume healthy if no nodes
+    return vals.reduce((a, b) => a + b, 0) / vals.length;
+  };
+
+  // Build sector_summary: prefer backend value when it's a valid finite number,
+  // fall back to node-computed average (covers null / missing / non-finite cases).
+  const rawSS = (obs.sector_summary ?? {}) as unknown as Record<string, unknown>;
+  const toSectorVal = (key: string): number => {
+    const raw = rawSS[key];
+    if (typeof raw === 'number' && Number.isFinite(raw)) {
+      return Math.max(0, Math.min(1, raw));
+    }
+    return nodeAvgForSector(key);
+  };
+
   return {
     ...obs,
-    nodes: Array.isArray(obs.nodes)
-      ? obs.nodes
-          .map((node) => asNode(node, pending_recoveries))
-          .filter((node) => node.node_id.length > 0)
-      : [],
+    nodes: normalizedNodes,
     edges: Array.isArray(obs.edges)
       ? obs.edges
           .map((edge) => asEdge(edge, failedSet))
           .filter((edge): edge is CGEdge => edge !== null)
       : [],
     sector_summary: {
-      ...FALLBACK_SECTOR_SUMMARY,
-      ...(obs.sector_summary ?? {}),
+      power:    toSectorVal('power'),
+      water:    toSectorVal('water'),
+      hospital: toSectorVal('hospital'),
+      telecom:  toSectorVal('telecom'),
     },
     active_failures,
     pending_recoveries,

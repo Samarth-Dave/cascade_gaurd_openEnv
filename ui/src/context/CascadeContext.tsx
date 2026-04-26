@@ -1,0 +1,501 @@
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import type { ReactNode } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+
+import { apiClient } from "@/api/client";
+import type {
+  AgentAction,
+  EpisodeResetResponse,
+  EpisodeState,
+  InfraNode,
+  StepResult,
+  Task,
+  WsEvent,
+} from "@/types";
+import { useEpisodeStream } from "@/hooks/useEpisodeStream";
+import type { EpisodeStreamStepPayload } from "@/hooks/useEpisodeStream";
+import type { LogLine } from "@/components/cascade/TerminalLog";
+
+interface CascadeContextValue {
+  config: { task: Task; seed: number };
+  setConfig: (next: { task: Task; seed: number }) => void;
+  sessionId: string | null;
+  state: EpisodeState | null;
+  currentNodes: InfraNode[];
+  currentEdges: EpisodeState["edges"];
+  lastStepResult: StepResult | null;
+  logs: LogLine[];
+  events: WsEvent[];
+  agentThinking: string;
+  agentAction: AgentAction | null;
+  autoRun: boolean;
+  setAutoRun: (value: boolean) => void;
+  pending: boolean;
+  isResetting: boolean;
+  isAgentStepping: boolean;
+  error: string | null;
+  isConnected: boolean;
+  resetEpisode: (task: Task, seed: number) => Promise<void>;
+  stepEpisode: (action: string, target: string | null, target2?: string | null) => Promise<void>;
+  runAgentStep: () => Promise<void>;
+}
+
+const CascadeContext = createContext<CascadeContextValue | null>(null);
+
+export function CascadeProvider({ children }: { children: ReactNode }) {
+  const queryClient = useQueryClient();
+  const [config, setConfig] = useState<{ task: Task; seed: number }>({ task: "task_hard", seed: 42 });
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [state, setState] = useState<EpisodeState | null>(null);
+  const [currentNodes, setCurrentNodes] = useState<InfraNode[]>([]);
+  const [currentEdges, setCurrentEdges] = useState<EpisodeState["edges"]>([]);
+  const [lastStepResult, setLastStepResult] = useState<StepResult | null>(null);
+  const [logs, setLogs] = useState<LogLine[]>([]);
+  const [agentThinking, setAgentThinking] = useState("");
+  const [agentAction, setAgentAction] = useState<AgentAction | null>(null);
+  const [autoRun, setAutoRun] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [isResetting, setIsResetting] = useState(false);
+  const [isAgentStepping, setIsAgentStepping] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Refs read inside the auto-run loop so it always sees the latest values
+  // without us re-spawning the loop on every state change.
+  const autoRunRef = useRef(autoRun);
+  const sessionIdRef = useRef(sessionId);
+  const stateRef = useRef(state);
+  const isAgentSteppingRef = useRef(isAgentStepping);
+  const isResettingRef = useRef(isResetting);
+  // Count consecutive agent-step failures. We only disable auto-run after
+  // MAX_AUTORUN_FAILURES in a row so a single flaky request (slow CPU
+  // inference timing out, tab-throttling-induced fetch stall, backend
+  // restart, etc.) doesn't silently kill the loop.
+  const autoRunFailuresRef = useRef(0);
+  const MAX_AUTORUN_FAILURES = 3;
+
+  useEffect(() => {
+    autoRunRef.current = autoRun;
+  }, [autoRun]);
+  useEffect(() => {
+    sessionIdRef.current = sessionId;
+  }, [sessionId]);
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+  useEffect(() => {
+    isAgentSteppingRef.current = isAgentStepping;
+  }, [isAgentStepping]);
+  useEffect(() => {
+    isResettingRef.current = isResetting;
+  }, [isResetting]);
+
+  const applyEpisodeState = useCallback((nextState: EpisodeState) => {
+    setState(nextState);
+    setCurrentNodes(nextState.nodes);
+    setCurrentEdges(nextState.edges);
+  }, []);
+
+  const applyStepResult = useCallback((result: StepResult): EpisodeState => {
+    // Always rebuild state from result.new_state and merge in the canonical
+    // node/edge arrays the backend returned at the top level. This guarantees
+    // currentNodes/currentEdges, episode_score, step, cascade_depth,
+    // sector_health and budget all advance after every step.
+    const nextState: EpisodeState = {
+      ...result.new_state,
+      done: result.done === true,
+      nodes: result.nodes && result.nodes.length > 0 ? result.nodes : result.new_state.nodes,
+      edges: result.edges && result.edges.length > 0 ? result.edges : result.new_state.edges,
+    };
+    setState(nextState);
+    setCurrentNodes(nextState.nodes);
+    setCurrentEdges(nextState.edges);
+    return nextState;
+  }, []);
+
+  const onStepResult = useCallback(
+    (payload: EpisodeStreamStepPayload) => {
+      if (payload.result?.new_state) {
+        const nextState = applyStepResult(payload.result);
+        const enrichedResult: StepResult = {
+          ...payload.result,
+          new_state: nextState,
+          nodes: nextState.nodes,
+          edges: nextState.edges,
+          done: nextState.done,
+        };
+        setLastStepResult(enrichedResult);
+        setAgentThinking(payload.result.agent_thinking ?? "");
+        setAgentAction(payload.result.agent_action ?? null);
+        if (payload.result.done === true) {
+          setAutoRun(false);
+          void queryClient.invalidateQueries({ queryKey: ["episode-history"] });
+        }
+        return;
+      }
+
+      if (payload.state) {
+        applyEpisodeState({
+          ...payload.state,
+          done: payload.state.done === true,
+        });
+      }
+    },
+    [applyEpisodeState, applyStepResult, queryClient],
+  );
+
+  const stream = useEpisodeStream(sessionId, state?.done ?? false, onStepResult);
+
+  useEffect(() => {
+    if (!stream.lastEvent) return;
+    appendLog(stream.lastEvent.level, stream.lastEvent.message, stream.lastEvent.timestamp);
+  }, [stream.lastEvent]);
+
+  // Auto-run loop. Spawned once per (autoRun on, sessionId) pair. The loop
+  // awaits each agent step to fully complete (including state mutation) before
+  // sleeping and queuing the next one. A cancelled flag + the autoRun
+  // ref guarantees a clean exit when the user toggles auto-run off, the
+  // episode finishes, or the session changes.
+  //
+  // Tab-visibility hardening: when the browser background-throttles this
+  // tab, setTimeout is clamped (commonly >=1s, Chromium can clamp to
+  // >=60s after 5min of idling). We watch `visibilitychange` and wake
+  // the loop immediately when the user returns — this is why switching
+  // tabs and returning no longer feels "stuck".
+  useEffect(() => {
+    if (!autoRun || !sessionId) return;
+    let cancelled = false;
+    let wake: (() => void) | null = null;
+    autoRunFailuresRef.current = 0;
+
+    // Promise-based sleep that can be interrupted by `wake()` (we resolve
+    // the same promise immediately when the tab regains focus).
+    const sleep = (ms: number) =>
+      new Promise<void>((resolve) => {
+        const timer = window.setTimeout(() => {
+          wake = null;
+          resolve();
+        }, ms);
+        wake = () => {
+          window.clearTimeout(timer);
+          wake = null;
+          resolve();
+        };
+      });
+
+    const onVisible = () => {
+      if (!document.hidden && wake) {
+        wake();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+
+    const loop = async () => {
+      while (!cancelled && autoRunRef.current) {
+        if (isResettingRef.current) {
+          await sleep(150);
+          continue;
+        }
+        if (stateRef.current?.done) return;
+        if (isAgentSteppingRef.current) {
+          await sleep(100);
+          continue;
+        }
+        await runAgentStep();
+        if (cancelled || !autoRunRef.current) return;
+        if (stateRef.current?.done) return;
+        // Back off on failure so we don't hammer the backend, but keep
+        // retrying — the user did opt into auto-run.
+        const nextDelay = autoRunFailuresRef.current > 0
+          ? Math.min(5_000, 1_000 * 2 ** (autoRunFailuresRef.current - 1))
+          : 1_500;
+        await sleep(nextDelay);
+      }
+    };
+
+    void loop();
+    return () => {
+      cancelled = true;
+      if (wake) wake();
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoRun, sessionId]);
+
+  function appendLog(level: LogLine["level"], message: string, timestamp = new Date().toISOString()) {
+    const formattedTime = new Date(timestamp).toLocaleTimeString("en-US", {
+      hour12: false,
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+    setLogs((current) => [
+      ...current,
+      {
+        id: `${timestamp}-${current.length}`,
+        timestamp: formattedTime,
+        level,
+        message,
+      },
+    ].slice(-200));
+  }
+
+  async function resetEpisode(task: Task, seed: number) {
+    setPending(true);
+    setIsResetting(true);
+    setError(null);
+    setAutoRun(false);
+    try {
+      const response: EpisodeResetResponse = await apiClient.resetEpisode(task, seed);
+      const nextState: EpisodeState = {
+        ...response.state,
+        // resetEpisode always begins a fresh, not-done run.
+        done: false,
+        nodes: response.nodes.length > 0 ? response.nodes : response.state.nodes,
+        edges: response.edges.length > 0 ? response.edges : response.state.edges,
+      };
+      setConfig({ task, seed });
+      setSessionId(response.session_id);
+      applyEpisodeState(nextState);
+      setLastStepResult(null);
+      setAgentThinking("");
+      setAgentAction(null);
+      setLogs([]);
+      appendLog("INFO", `Episode started for ${task} with seed ${seed}.`);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Failed to start episode.");
+    } finally {
+      setPending(false);
+      setIsResetting(false);
+    }
+  }
+
+  async function stepEpisode(action: string, target: string | null, target2: string | null = null) {
+    if (!sessionId) return;
+    setPending(true);
+    setError(null);
+    try {
+      const result = await apiClient.stepEpisode(sessionId, action, target, target2);
+      const nextState = applyStepResult(result);
+      const targetLabel = target2 ? `${target ?? ""},${target2}` : target;
+      handleStepResult(
+        result,
+        `Manual action ${action}${targetLabel ? ` -> ${targetLabel}` : ""}`,
+        action,
+        targetLabel ?? null,
+        nextState,
+      );
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Action failed.");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function runAgentStep() {
+    const activeSessionId = sessionIdRef.current ?? sessionId;
+    if (!activeSessionId) return;
+    if (isAgentSteppingRef.current || isResettingRef.current) return;
+    if (stateRef.current?.done) return;
+    setPending(true);
+    setIsAgentStepping(true);
+    setError(null);
+    try {
+      const result = await apiClient.agentStep(activeSessionId);
+      const nextState = applyStepResult(result);
+      handleStepResult(
+        result,
+        "Agent step executed.",
+        result.agent_action?.action ?? null,
+        result.agent_action?.target ?? null,
+        nextState,
+      );
+      autoRunFailuresRef.current = 0;
+    } catch (requestError) {
+      const message = requestError instanceof Error ? requestError.message : "Agent step failed.";
+      setError(message);
+      // Only kill auto-run after repeated failures. A single slow/dropped
+      // request (CPU model timeout, tab-throttle, backend restart) should
+      // not silently turn auto-run off.
+      if (autoRunRef.current) {
+        autoRunFailuresRef.current += 1;
+        if (autoRunFailuresRef.current >= MAX_AUTORUN_FAILURES) {
+          autoRunFailuresRef.current = 0;
+          setAutoRun(false);
+          appendLog(
+            "CRIT",
+            `Auto-run halted after ${MAX_AUTORUN_FAILURES} consecutive failures: ${message}`,
+          );
+        } else {
+          appendLog(
+            "WARN",
+            `Agent step failed (${autoRunFailuresRef.current}/${MAX_AUTORUN_FAILURES}): ${message}. Retrying...`,
+          );
+        }
+      } else {
+        // Manual step: surface the error but don't touch auto-run state.
+        autoRunFailuresRef.current = 0;
+      }
+    } finally {
+      setPending(false);
+      setIsAgentStepping(false);
+    }
+  }
+
+  function handleStepResult(
+    result: StepResult,
+    message: string,
+    actionLabel: string | null,
+    actionTarget: string | null,
+    nextState: EpisodeState,
+  ) {
+    const enrichedResult: StepResult = {
+      ...result,
+      new_state: nextState,
+      nodes: nextState.nodes,
+      edges: nextState.edges,
+      done: nextState.done,
+    };
+    const previousState = state;
+    setLastStepResult(enrichedResult);
+    setAgentThinking(result.agent_thinking ?? "");
+    setAgentAction(result.agent_action ?? null);
+    appendLog(nextState.done ? "OK" : "INFO", message);
+    const feedback = buildActionFeedbackEntry(previousState, enrichedResult, actionLabel, actionTarget);
+    appendLog(feedback.level, feedback.message);
+    if (nextState.done) {
+      setAutoRun(false);
+      void queryClient.invalidateQueries({ queryKey: ["episode-history"] });
+    }
+  }
+
+  const value = useMemo<CascadeContextValue>(
+    () => ({
+      config,
+      setConfig,
+      sessionId,
+      state,
+      currentNodes,
+      currentEdges,
+      lastStepResult,
+      logs,
+      events: stream.events,
+      agentThinking,
+      agentAction,
+      autoRun,
+      setAutoRun,
+      pending,
+      isResetting,
+      isAgentStepping,
+      error,
+      isConnected: stream.isConnected,
+      resetEpisode,
+      stepEpisode,
+      runAgentStep,
+    }),
+    [
+      agentAction,
+      agentThinking,
+      autoRun,
+      config,
+      currentEdges,
+      currentNodes,
+      error,
+      isAgentStepping,
+      isResetting,
+      lastStepResult,
+      logs,
+      pending,
+      sessionId,
+      state,
+      stream.events,
+      stream.isConnected,
+    ],
+  );
+
+  return <CascadeContext.Provider value={value}>{children}</CascadeContext.Provider>;
+}
+
+function findNode(nodes: InfraNode[], nodeId: string | null): InfraNode | null {
+  if (!nodeId) {
+    return null;
+  }
+  return nodes.find((node) => node.id === nodeId) ?? null;
+}
+
+function formatHealth(node: InfraNode | null): string {
+  if (!node) {
+    return "n/a";
+  }
+  return `${node.health_pct}%`;
+}
+
+function appendReasoningSuffix(
+  beforeNode: InfraNode | null,
+  afterNode: InfraNode | null,
+  cascadeChanged: boolean,
+  rewardStep: number,
+): string {
+  if (beforeNode && beforeNode.is_operational && beforeNode.health_pct > 70 && afterNode && beforeNode.health_pct === afterNode.health_pct && rewardStep <= 0.05) {
+    return " Target was already healthy and operational, so the action had little effect.";
+  }
+  if (beforeNode && beforeNode.is_operational && afterNode && beforeNode.health_pct === afterNode.health_pct && !cascadeChanged && rewardStep <= 0.05) {
+    return " Node state and cascade depth barely changed, so reward stayed low.";
+  }
+  if (!cascadeChanged && rewardStep <= 0.05) {
+    return " Cascade depth did not improve, which limited the reward.";
+  }
+  return "";
+}
+
+function buildActionFeedbackMessage(
+  previousState: EpisodeState | null,
+  result: StepResult,
+  actionLabel: string | null,
+  actionTarget: string | null,
+): string {
+  const resolvedAction = actionLabel ?? result.agent_action?.action ?? "UNKNOWN";
+  const resolvedTarget = actionTarget ?? result.agent_action?.target ?? null;
+  const beforeNode = previousState ? findNode(previousState.nodes, resolvedTarget) : null;
+  const afterNode = findNode(result.new_state.nodes, resolvedTarget);
+  const previousCascade = previousState?.cascade_depth ?? result.new_state.cascade_depth;
+  const nextCascade = result.new_state.cascade_depth;
+  const cascadeChanged = previousCascade !== nextCascade;
+  const cascadePart =
+    previousState === null
+      ? `cascade ${nextCascade}`
+      : `cascade ${previousCascade} -> ${nextCascade}`;
+  return (
+    `${resolvedAction}${resolvedTarget ? ` ${resolvedTarget}` : ""} | ` +
+    `health ${formatHealth(beforeNode)} -> ${formatHealth(afterNode)} | ` +
+    `reward ${result.reward_step >= 0 ? "+" : ""}${result.reward_step.toFixed(3)} | ` +
+    `${cascadePart}.` +
+    appendReasoningSuffix(beforeNode, afterNode, cascadeChanged, result.reward_step)
+  );
+}
+
+function buildActionFeedbackEntry(
+  previousState: EpisodeState | null,
+  result: StepResult,
+  actionLabel: string | null,
+  actionTarget: string | null,
+) {
+  const message = buildActionFeedbackMessage(previousState, result, actionLabel, actionTarget);
+  const level = result.reward_step <= 0.05 ? "WARN" : result.reward_step > 0 ? "OK" : "CRIT";
+  return { level, message };
+}
+
+export function useCascade() {
+  const context = useContext(CascadeContext);
+  if (!context) {
+    throw new Error("useCascade must be used inside CascadeProvider.");
+  }
+  return context;
+}

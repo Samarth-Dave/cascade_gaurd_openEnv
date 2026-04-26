@@ -4,10 +4,13 @@ import path from "path";
 import { componentTagger } from "lovable-tagger";
 
 // https://vitejs.dev/config/
+// base: "/" so /assets/* paths resolve correctly when FastAPI serves the
+// built UI from the same origin in production.
 export default defineConfig(({ mode }) => ({
+  base: "/",
   server: {
     host: "::",
-    port: 8080,
+    port: 5173,
     hmr: {
       overlay: false,
     },

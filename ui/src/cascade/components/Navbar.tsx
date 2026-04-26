@@ -9,7 +9,7 @@ export function Navbar({ city, onOpenCity }: Props) {
   const links = ['Home','Live Map','AI Duel','Neural Graph','Threat Intel','Analytics','Logs'];
   const ids   = ['#hero','#map','#duel','#graph','#intel','#analytics','#logs'];
   return (
-    <header className="fixed inset-x-0 top-0 z-40 h-[60px] cg-glass border-b border-foreground/10">
+    <header className="fixed inset-x-0 top-0 z-[120] h-[60px] cg-glass border-b border-foreground/10">
       <div className="h-full max-w-[1400px] mx-auto px-5 flex items-center justify-between gap-4">
         <a href="#hero" className="flex items-center gap-2.5">
           <HexLogo />

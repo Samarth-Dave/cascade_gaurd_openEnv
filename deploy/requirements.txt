@@ -1,0 +1,56 @@
+# CascadeGuard deploy Space — minimal, HF-Spaces-safe requirements.
+#
+# NOT the same as the *training* Space requirements (nvidia/cuda:12.3.2 +
+# --extra-index-url for torch==2.5.1+cu121, trl/datasets, osmnx, etc.).
+# That file is correct for a custom Docker training image. This file is
+# for Hugging Face *Gradio* Spaces, which run a different pip step and
+# image — mixing in osmnx/geopandas or pinning torch to +cu121 often
+# breaks the build. Keep inference-only deps here.
+#
+# Why so short?
+#   HF Spaces (Gradio SDK) ALWAYS appends the following to this file:
+#     gradio[oauth]==4.44.0
+#     uvicorn>=0.14.0  websockets>=10.4
+#     spaces
+#   so we must NOT pin gradio / uvicorn / websockets here or pip's
+#   resolver can fight itself. Everything below is either strictly
+#   required by deploy/app.py, or a transitive that we pin because its
+#   auto-selected version causes a known break.
+#
+# What's intentionally NOT here?
+#   - osmnx / fiona / geopandas / rtree / shapely
+#     The env reads pre-baked data/real_nodes.json; no OSM fetch at runtime.
+#     These packages also drag GDAL/system libs that HF's build image
+#     doesn't have headers for — they were the main cause of the
+#     "[base 7/8] RUN pip install" build failure.
+#   - sentencepiece / tiktoken (optional; add if you switch to a model
+#     whose tokenizer needs them). Often pulled transitively.
+#   - pandas / numpy
+#     Transitively installed by transformers / torch; don't double-pin.
+
+# ---- Web stack (do NOT pin gradio / uvicorn / websockets here) --------
+fastapi>=0.109.0
+pydantic>=2.5.0
+python-dotenv>=1.0.0
+# pulled in transitively anyway, but calling it out so our imports are
+# resolvable even if the HF auto-appended uvicorn changes its extras.
+starlette>=0.36.0
+
+# ---- OpenEnv env base class + light runtime deps ----------------------
+openenv-core[core]>=0.2.2
+requests>=2.31.0
+networkx>=3.0
+
+# ---- LLM inference ----------------------------------------------------
+# torch is huge (~2 GB); we do NOT pin a +cuXXX wheel because HF Spaces
+# selects the correct CUDA build for the assigned GPU tier.
+torch>=2.3.0
+transformers>=4.46.0
+accelerate>=1.0.0
+peft>=0.14.0
+huggingface_hub>=0.24.0
+safetensors>=0.4.0
+# 4-bit quantization for large adapters. bitsandbytes ships CUDA wheels;
+# pip install succeeds on CPU-only builds but the library is only imported
+# if torch.cuda.is_available() at runtime in app.py.
+bitsandbytes>=0.43.0

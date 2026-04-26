@@ -11,3 +11,6 @@ test_grader_clamp_safety.py
 validate_score_fixes.py
 baseline_results.json
 context.txt
+.env
+backend/.env
+ui/.env
