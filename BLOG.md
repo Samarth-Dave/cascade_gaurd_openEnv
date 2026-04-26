@@ -14,6 +14,7 @@ Links:
 |---|---|
 | Backend API Space | https://harshit0400-backend.hf.space |
 | Frontend UI Space | https://huggingface.co/spaces/LordBhatt/CascadeGuardUI |
+| YouTube demo video | https://youtu.be/DEuIHVl5o_o |
 | Live environment Space | https://huggingface.co/spaces/samarthdave0305/cascade-failure-env |
 | Trained adapter checkpoint | https://huggingface.co/samarthdave0305/cascadeguard-trained/tree/main |
 | GitHub repository | https://github.com/Samarth-Dave/cascade_gaurd_openEnv |
@@ -161,28 +162,31 @@ GRPO has reached real training. The first full attempt with `generations=4`, `ma
 
 Final GRPO reward plots should be placed in:
 
-- `assets/results/training_reward_curve.png`
-- `assets/results/baseline_vs_trained_reward.png`
+- `assets/results/TrainingLoss.png`
+- `assets/results/GropRewards.png`
 
 ## Result Images
 
-The following image paths are reserved for final submission assets:
+The following images are the ones currently present in `assets/results/`:
 
-![Training loss](./assets/results/training_loss_curve.png)
+![Training loss](./assets/results/TrainingLoss.png)
 
 Caption: SFT/GRPO loss over training step.
 
-![Training reward](./assets/results/training_reward_curve.png)
+![Training reward](./assets/results/GropRewards.png)
 
 Caption: GRPO reward over training step.
 
-![Baseline vs trained reward](./assets/results/baseline_vs_trained_reward.png)
+## Assessment Summary
 
-Caption: Baseline policy versus trained policy on the same evaluation split.
+Current assessment based on the saved artifacts:
 
-![Dashboard screenshot](./assets/results/demo_dashboard.png)
+- The training-loss plot is present and shows the fine-tuning run completed enough to produce a visible curve.
+- The GRPO reward plot is present and gives a direct view of policy improvement over training steps.
+- The current repository does not yet contain baseline-vs-trained or dashboard images in `assets/results/`, so those are not embedded here.
+- The trained adapter checkpoint is available on Hugging Face and is loaded on top of the DeepSeek base model.
 
-Caption: Live CascadeGuard Space dashboard.
+This means the blog is now aligned with the actual evidence in the repo, rather than placeholder result filenames.
 
 ## What Changed After Training
 

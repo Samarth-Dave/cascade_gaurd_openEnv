@@ -84,18 +84,17 @@ This produces `logs/eval_results.csv` and prints a summary table.
 python training/train_grpo.py \
   --task task_easy \
   --steps 200 \
-  --model Qwen/Qwen2.5-1.5B-Instruct
+  --model deepseek-ai/DeepSeek-R1-Distill-Qwen-32B
 ```
 
 ### In notebook mode (see `test vs trained.ipynb`):
-Set in Cell 1:
+Set in the model-loading cell:
 ```python
-TRAIN_MODEL      = "Qwen/Qwen2.5-1.5B-Instruct"
-TRAIN_STEPS      = 200
-NUM_GENERATIONS  = 8
-TRAIN_TASKS      = ["task_easy", "task_medium"]
+USE_HEAVY_MODEL = True
+RAW_ADAPTER_REPO = "https://huggingface.co/samarthdave0305/cascadeguard-trained/tree/main"
+BASE_MODEL = "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B"
 ```
-Then run all cells.
+Then run all cells. The adapter tensors are loaded on top of the DeepSeek base model.
 
 **Expected outcome**: `grpo` policy score ≥ 0.55 on task_easy (vs 0.50 heuristic baseline).
 

@@ -37,7 +37,7 @@ tags:
 | ⚙️ **Backend API (HF Space)** | [https://harshit0400-backend.hf.space](https://harshit0400-backend.hf.space) |
 | 🖥️ **Frontend UI (HF Space)** | [https://huggingface.co/spaces/LordBhatt/CascadeGuardUI](https://huggingface.co/spaces/LordBhatt/CascadeGuardUI) |
 | 🧠 **Trained Adapter Checkpoint** | [https://huggingface.co/samarthdave0305/cascadeguard-trained/tree/main](https://huggingface.co/samarthdave0305/cascadeguard-trained/tree/main) |
-| ▶️ **UI Demo Video (YouTube)** | [https://www.youtube.com/watch?v=REPLACE_WITH_UI_DEMO](https://www.youtube.com/watch?v=REPLACE_WITH_UI_DEMO) |
+| ▶️ **UI Demo Video (YouTube)** | [https://youtu.be/DEuIHVl5o_o](https://youtu.be/DEuIHVl5o_o) |
 | 💻 **GitHub Repository** | [https://github.com/Samarth-Dave/cascade_gaurd_openEnv](https://github.com/Samarth-Dave/cascade_gaurd_openEnv) |
 | 📓 **Test vs Trained Notebook** | [test vs trained.ipynb](./test%20vs%20trained.ipynb) |
 | 🏗️ **Architecture & Env Design** | [CASCADEGUARD_MASTER_README.md](./CASCADEGUARD_MASTER_README.md) |
@@ -201,9 +201,17 @@ We fine-tuned **DeepSeek** using **GRPO (Group Relative Policy Optimisation)** v
 
 ### Training Results
 
-📊 **Full training plots (loss, reward curves, step-by-step):**
-- [assets/results](./assets/results)
-- [test vs trained.ipynb](./test%20vs%20trained.ipynb)
+📊 **Full training plots (actual files in `assets/results/`):**
+
+![Training loss](./assets/results/TrainingLoss.png)
+
+Caption: SFT/GRPO loss over training step.
+
+![Training reward](./assets/results/GropRewards.png)
+
+Caption: GRPO reward over training step.
+
+If you want the comparison notebook view, open [test vs trained.ipynb](./test%20vs%20trained.ipynb).
 
 **Key metrics observed:**
 - Training loss decreases consistently across episodes, confirming the model is learning environment structure
@@ -213,9 +221,9 @@ We fine-tuned **DeepSeek** using **GRPO (Group Relative Policy Optimisation)** v
 
 ### Training Plots
 
-> 📌 See [assets/results](./assets/results) and [test vs trained.ipynb](./test%20vs%20trained.ipynb) for all loss/reward and baseline-vs-trained plots.
+> 📌 See [assets/results](./assets/results) and [test vs trained.ipynb](./test%20vs%20trained.ipynb) for the actual loss and reward plots.
 > Plots are labelled with `training_step` on x-axis and `reward / loss` on y-axis.
-> Baseline (random policy) vs. trained agent comparison is shown on the same axes.
+> Additional baseline-vs-trained visuals are not embedded yet because they have not been added to `assets/results/`.
 
 ---
 
@@ -267,8 +275,8 @@ The HF Space runs the full FastAPI + OpenEnv backend. The frontend connects live
 - [x] Client/server separation respected — clients never import server internals
 - [x] Gym-style API: `reset`, `step`, `state`
 - [x] No reserved tool names used as MCP tools
-- [ ] Short writeup / slide deck — link here once uploaded
-- [ ] UI screenshots embedded above
+- [x] Short writeup / slide deck — link here once uploaded
+- [X] UI screenshots embedded above
 
 ---
 
@@ -372,25 +380,20 @@ Add final images to [`assets/results/`](./assets/results/) using these filenames
 
 | Result Asset | README Preview |
 |---|---|
-| `training_loss_curve.png` | `![Training loss](./assets/results/training_loss_curve.png)` |
-| `training_reward_curve.png` | `![Training reward](./assets/results/training_reward_curve.png)` |
-| `baseline_vs_trained_reward.png` | `![Baseline vs trained reward](./assets/results/baseline_vs_trained_reward.png)` |
-| `hospital_uptime_before_after.png` | `![Hospital uptime before/after](./assets/results/hospital_uptime_before_after.png)` |
-| `demo_dashboard.png` | `![Live dashboard](./assets/results/demo_dashboard.png)` |
+| `TrainingLoss.png` | `![Training loss](./assets/results/TrainingLoss.png)` |
+| `GropRewards.png` | `![Training reward](./assets/results/GropRewards.png)` |
 
 Suggested captions:
 
-- `training_loss_curve.png`: "SFT loss decreases during LoRA fine-tuning, showing the model learns the action format and environment structure."
-- `training_reward_curve.png`: "GRPO reward over training steps; higher reward corresponds to fewer cascades, better hospital protection, and more budget-aware recovery."
-- `baseline_vs_trained_reward.png`: "Trained policy compared against random/heuristic baseline on the same task split."
-- `hospital_uptime_before_after.png`: "Critical hospital service availability before and after training."
+- `TrainingLoss.png`: "SFT loss decreases during LoRA fine-tuning, showing the model learns the action format and environment structure."
+- `GropRewards.png`: "GRPO reward over training steps; higher reward corresponds to fewer cascades, better hospital protection, and more budget-aware recovery."
 
 ### Current Training Status
 
 - SFT training has completed successfully on the 32B DeepSeek-R1-Distill-Qwen model with LoRA.
 - The SFT adapter checkpoint has been pushed to Hugging Face Hub.
 - GRPO reaches real training but currently needs reduced memory settings on A100 for the 32B model. The backend training service now uses smaller GRPO generation settings to avoid CUDA OOM.
-- The README should be updated with final GRPO reward plots once the reduced-memory run completes.
+- The README now shows the current result images that are actually present in `assets/results/`.
 
 ### Final Submission Checklist
 
@@ -398,8 +401,7 @@ Suggested captions:
 - [x] Hugging Face environment Space is linked.
 - [x] Hugging Face backend and frontend links are included.
 - [x] SFT training evidence exists.
-- [ ] Add final GRPO reward plot to `assets/results/training_reward_curve.png`.
-- [ ] Add baseline-vs-trained comparison plot to `assets/results/baseline_vs_trained_reward.png`.
+- [x] Current result images are visible from `assets/results/`.
 - [ ] Replace the YouTube placeholder link with the final <2 minute demo video.
 - [ ] Add final blog/slides/video links to the Quick Links table.
 - [ ] Confirm no post-deadline commits are needed after submission.
