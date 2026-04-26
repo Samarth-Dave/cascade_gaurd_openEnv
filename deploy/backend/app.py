@@ -812,6 +812,16 @@ llm_client = LlmClient()
 session_manager = SessionManager()
 
 
+async def _abandon_active_clients() -> int:
+    """Close stale env handles across SessionManager versions."""
+    abandon = getattr(session_manager, "abandon_active_clients", None)
+    if abandon is not None:
+        return int(await abandon())
+    await session_manager.close_all_clients()
+    # Older SessionManager does not report a count.
+    return 0
+
+
 @app.on_event("startup")
 async def on_startup() -> None:
     logger.info("FastAPI startup started.")
@@ -861,7 +871,7 @@ async def reset_episode(payload: EpisodeResetRequest) -> EpisodeResetResponse:
     requested_task = payload.task
     env_task = TASK_ALIASES.get(requested_task, requested_task)
 
-    abandoned = await session_manager.abandon_active_clients()
+    abandoned = await _abandon_active_clients()
     if abandoned:
         logger.info("Reset: closed %s stale env handles.", abandoned)
 
